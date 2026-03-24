@@ -15,11 +15,11 @@ interface ApiKey {
 
 const FINANCIAL_API_KEYS: ApiKey[] = [
   {
-    key: 'FINANCIAL_DATASETS_API_KEY',
-    label: 'Financial Datasets API',
-    description: 'For getting financial data to power the hedge fund',
-    url: 'https://financialdatasets.ai/',
-    placeholder: 'your-financial-datasets-api-key'
+    key: 'TWELVE_DATA_API_KEY',
+    label: 'Twelve Data API',
+    description: 'For getting financial data to power the hedge fund (supports NSE/BSE Indian stocks)',
+    url: 'https://twelvedata.com/',
+    placeholder: 'your-twelve-data-api-key'
   }
 ];
 

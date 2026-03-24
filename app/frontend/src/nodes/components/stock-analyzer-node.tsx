@@ -53,14 +53,14 @@ export function StockAnalyzerNode({
   const [endDate, setEndDate] = useNodeState(id, 'endDate', today.toISOString().split('T')[0]);
   const [open, setOpen] = useState(false);
   
-  const { currentFlowId } = useFlowContext();
+  const { effectiveFlowId } = useFlowContext();
   const nodeContext = useNodeContext();
   const { getAllAgentModels } = nodeContext;
   const { getNodes, getEdges } = useReactFlow();
   const { expandBottomPanel, setBottomPanelTab } = useLayoutContext();
   
   // Use the new flow connection hook
-  const flowId = currentFlowId?.toString() || null;
+  const flowId = effectiveFlowId;
   const {
     isConnecting,
     isConnected,

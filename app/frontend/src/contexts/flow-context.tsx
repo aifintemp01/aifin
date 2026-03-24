@@ -13,6 +13,7 @@ interface FlowContextType {
   loadFlow: (flow: Flow) => Promise<void>;
   createNewFlow: () => Promise<void>;
   currentFlowId: number | null;
+  effectiveFlowId: string;
   currentFlowName: string;
   isUnsaved: boolean;
   reactFlowInstance: ReactFlowInstance;
@@ -35,8 +36,18 @@ interface FlowProviderProps {
 export function FlowProvider({ children }: FlowProviderProps) {
   const reactFlowInstance = useReactFlow();
   const [currentFlowId, setCurrentFlowId] = useState<number | null>(null);
+  const [tempFlowId, setTempFlowId] = useState<string | null>(null);
   const [currentFlowName, setCurrentFlowName] = useState('Untitled Flow');
   const [isUnsaved, setIsUnsaved] = useState(false);
+
+  // Generate a temporary flow ID when currentFlowId is null
+  const effectiveFlowId = currentFlowId !== null 
+    ? currentFlowId.toString() 
+    : (tempFlowId || (() => {
+        const newTempId = `temp-${Date.now()}`;
+        setTempFlowId(newTempId);
+        return newTempId;
+      })());
 
   // Calculate viewport center position with optional randomness
   const getViewportPosition = useCallback((addRandomness = false): XYPosition => {
@@ -345,6 +356,7 @@ export function FlowProvider({ children }: FlowProviderProps) {
     loadFlow,
     createNewFlow,
     currentFlowId,
+    effectiveFlowId,
     currentFlowName,
     isUnsaved,
     reactFlowInstance,

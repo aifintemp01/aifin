@@ -133,7 +133,9 @@ export function useFlowManagementTabs(): UseFlowManagementTabsReturn {
   const loadFlows = useCallback(async () => {
     setIsLoading(true);
     try {
+      console.log('Loading flows from API...');
       const flowsData = await flowService.getFlows();
+      console.log('Flows received:', flowsData);
       setFlows(flowsData);
       
       // Don't automatically create or open tabs on startup
@@ -211,9 +213,14 @@ export function useFlowManagementTabs(): UseFlowManagementTabsReturn {
 
   const handleOpenFlowInTab = useCallback(async (flow: Flow) => {
     try {      
+      console.log('=== handleOpenFlowInTab called ===');
+      console.log('Flow parameter:', flow);
+      
       // Always fetch the full flow data including nodes, edges, and viewport
       // This ensures we have the latest data from the backend
+      console.log('Fetching flow data from backend...');
       const fullFlow = await flowService.getFlow(flow.id);
+      console.log('Backend response:', fullFlow);
       
       // Create tab data with configuration restoration only
       const createTabWithConfigRestore = (flowData: Flow) => {

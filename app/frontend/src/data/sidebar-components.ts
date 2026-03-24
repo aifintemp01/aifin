@@ -29,11 +29,11 @@ export interface ComponentGroup {
  * Get all component groups, including agents fetched from the backend
  */
 export const getComponentGroups = async (): Promise<ComponentGroup[]> => {
-  const agents = await getAgents();
-  
+  const agents = await getAgents(true);
+  console.log('Agents from backend:', agents);
   return [
-    {
-      name: "Start Nodes",
+      {
+        name: "Start Nodes",
       icon: Play,
       iconColor: "text-blue-500",
       items: [

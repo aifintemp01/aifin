@@ -1,3 +1,14 @@
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(r"C:/Users/Dell/Desktop/AI_hege_fund_3/ai-hedge-fund/.env")
+print(f"Loading .env from: {env_path}")
+print(f"File exists: {env_path.exists()}")
+load_dotenv(env_path, override=True)
+
+import os
+print("TWELVE_DATA_API_KEY loaded:", bool(os.environ.get("TWELVE_DATA_API_KEY")))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -20,7 +31,7 @@ Base.metadata.create_all(bind=engine)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Frontend URLs
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:5176", "http://127.0.0.1:5176", "https://aifin-frontend.vercel.app"],  # Frontend URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

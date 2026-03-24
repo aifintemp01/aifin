@@ -14,17 +14,26 @@ let agents: Agent[] | null = null;
 /**
  * Get the list of agents from the backend API
  * Uses caching to avoid repeated API calls
+ * @param forceRefresh - If true, will bypass cache and fetch fresh data
  */
-export const getAgents = async (): Promise<Agent[]> => {
-  if (agents) {
+export const getAgents = async (forceRefresh: boolean = false): Promise<Agent[]> => {
+  if (agents && !forceRefresh) {
     return agents;
   }
   
   try {
-    agents = await api.getAgents();
-    return agents;
+    const freshAgents = await api.getAgents();
+    agents = freshAgents;
+    return freshAgents;
   } catch (error) {
     console.error('Failed to fetch agents:', error);
     throw error; // Let the calling component handle the error
   }
+};
+
+/**
+ * Clear the agents cache - useful for testing or when you need to force a refresh
+ */
+export const clearAgentsCache = () => {
+  agents = null;
 };

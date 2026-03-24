@@ -15,13 +15,20 @@ class WarrenBuffettSignal(BaseModel):
     confidence: int = Field(description="Confidence 0-100")
     reasoning: str = Field(description="Reasoning for the decision")
 
+def _safe_get(obj, attr: str):
+    """Safely get an attribute from a Pydantic model or dict."""
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    elif isinstance(obj, dict):
+        return obj.get(attr)
+    return None
 
 def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agent"):
     """Analyzes stocks using Buffett's principles and LLM reasoning."""
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     # Collect all analysis for LLM reasoning
     analysis_data = {}
     buffett_analysis = {}
@@ -211,7 +218,7 @@ def analyze_consistency(financial_line_items: list) -> dict[str, any]:
     reasoning = []
 
     # Check earnings growth trend
-    earnings_values = [item.net_income for item in financial_line_items if item.net_income]
+    earnings_values = [_safe_get(item, "net_income") for item in financial_line_items if _safe_get(item, "net_income")]
     if len(earnings_values) >= 4:
         # Simple check: is each period's earnings bigger than the next?
         earnings_growth = all(earnings_values[i] > earnings_values[i + 1] for i in range(len(earnings_values) - 1))
@@ -475,12 +482,10 @@ def estimate_maintenance_capex(financial_line_items: list) -> float:
             depreciation_values.append(item.depreciation_and_amortization)
 
     # Approach 2: Percentage of depreciation (typically 80-120% for maintenance)
-    latest_depreciation = financial_line_items[0].depreciation_and_amortization if financial_line_items[
-        0].depreciation_and_amortization else 0
+    latest_depreciation = _safe_get(financial_line_items[0], "depreciation_and_amortization") if _safe_get(financial_line_items[0], "depreciation_and_amortization") else 0
 
     # Approach 3: Industry-specific heuristics
-    latest_capex = abs(financial_line_items[0].capital_expenditure) if financial_line_items[
-        0].capital_expenditure else 0
+    latest_capex = abs(_safe_get(financial_line_items[0], "capital_expenditure")) if _safe_get(financial_line_items[0], "capital_expenditure") else 0
 
     # Conservative estimate: Use the higher of:
     # 1. 85% of total capex (assuming 15% is growth capex)
@@ -493,8 +498,7 @@ def estimate_maintenance_capex(financial_line_items: list) -> float:
     # If we have historical data, use average capex ratio
     if len(capex_ratios) >= 3:
         avg_capex_ratio = sum(capex_ratios) / len(capex_ratios)
-        latest_revenue = financial_line_items[0].revenue if hasattr(financial_line_items[0], 'revenue') and \
-                                                            financial_line_items[0].revenue else 0
+        latest_revenue = _safe_get(financial_line_items[0], "revenue") if _safe_get(financial_line_items[0], "revenue") else 0
         method_3 = avg_capex_ratio * latest_revenue if latest_revenue else 0
 
         # Use the median of the three approaches for conservatism
@@ -520,7 +524,7 @@ def calculate_intrinsic_value(financial_line_items: list) -> dict[str, any]:
 
     owner_earnings = earnings_data["owner_earnings"]
     latest_financial_line_items = financial_line_items[0]
-    shares_outstanding = latest_financial_line_items.outstanding_shares
+    shares_outstanding = _safe_get(latest_financial_line_items, "outstanding_shares")
 
     if not shares_outstanding or shares_outstanding <= 0:
         return {"intrinsic_value": None, "details": ["Missing or invalid shares outstanding data"]}

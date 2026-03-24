@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, JSON, ForeignKey, Float
 from sqlalchemy.sql import func
 from .connection import Base
 
@@ -110,6 +110,40 @@ class ApiKey(Base):
     # Optional metadata
     description = Column(Text, nullable=True)  # Human-readable description
     last_used = Column(DateTime(timezone=True), nullable=True)  # Track usage
+
+
+class MarketDataRaw(Base):
+    __tablename__ = 'market_data_raw'
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(100), nullable=False)
+    endpoint = Column(String(100), nullable=False)
+    ticker = Column(String(50), nullable=False)
+    start_date = Column(String(20), nullable=True)
+    end_date = Column(String(20), nullable=True)
+    interval = Column(String(20), nullable=True)
+    raw_response = Column(JSON, nullable=False)
+    status_code = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    request_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarketDataCandle(Base):
+    __tablename__ = 'market_data_candles'
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String(50), nullable=False)
+    provider = Column(String(100), nullable=False)
+    time = Column(String(20), nullable=False)
+    interval = Column(String(20), nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Integer, nullable=True)
+    adj_close = Column(Float, nullable=True)
+    source_url = Column(String(255), nullable=True)
+    raw_data_id = Column(Integer, ForeignKey('market_data_raw.id'), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
  

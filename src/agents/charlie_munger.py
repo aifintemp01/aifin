@@ -23,7 +23,7 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     analysis_data = {}
     munger_analysis = {}
     
@@ -48,7 +48,8 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
                 "shareholders_equity",
                 "outstanding_shares",
                 "research_and_development",
-                "goodwill_and_intangible_assets",
+                "goodwill",
+                "intangible_assets",
             ],
             end_date,
             period="annual",
@@ -159,6 +160,7 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
 
 
 def analyze_moat_strength(metrics: list, financial_line_items: list) -> dict:
+
     """
     Analyze the business's competitive advantage using Munger's approach:
     - Consistent high returns on capital (ROIC)
@@ -243,15 +245,17 @@ def analyze_moat_strength(metrics: list, financial_line_items: list) -> dict:
     r_and_d = [item.research_and_development for item in financial_line_items
               if hasattr(item, 'research_and_development') and item.research_and_development is not None]
     
-    goodwill_and_intangible_assets = [item.goodwill_and_intangible_assets for item in financial_line_items
-               if hasattr(item, 'goodwill_and_intangible_assets') and item.goodwill_and_intangible_assets is not None]
+    goodwill = [item.goodwill for item in financial_line_items
+                if hasattr(item, 'goodwill') and item.goodwill is not None]
+    intangible_assets = [item.intangible_assets for item in financial_line_items
+                if hasattr(item, 'intangible_assets') and item.intangible_assets is not None]
 
     if r_and_d and len(r_and_d) > 0:
         if sum(r_and_d) > 0:  # If company is investing in R&D
             score += 1
             details.append("Invests in R&D, building intellectual property")
     
-    if (goodwill_and_intangible_assets and len(goodwill_and_intangible_assets) > 0):
+    if goodwill or intangible_assets:
         score += 1
         details.append("Significant goodwill/intangible assets, suggesting brand value or IP")
     
@@ -541,8 +545,13 @@ def analyze_predictability(financial_line_items: list) -> dict:
         details.append("Insufficient operating income history")
     
     # 3. Margin consistency - Munger values stable margins
-    op_margins = [item.operating_margin for item in financial_line_items 
-                 if hasattr(item, 'operating_margin') and item.operating_margin is not None]
+    # Calculate operating margin from operating_income and revenue
+    op_margins = []
+    for item in financial_line_items:
+        operating_income = getattr(item, "operating_income", None)
+        revenue = getattr(item, "revenue", None)
+        if operating_income is not None and revenue is not None and revenue != 0:
+            op_margins.append(operating_income / revenue)
     
     if op_margins and len(op_margins) >= 5:
         # Calculate margin volatility

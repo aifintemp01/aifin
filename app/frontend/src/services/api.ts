@@ -97,8 +97,11 @@ export const api = {
     // Helper function to get agent IDs from graph structure
     const getAgentIds = () => params.graph_nodes.map(node => node.id);
 
-    // Pass the unique node IDs directly to the backend
-    const backendParams = params;
+    // Pass the unique node IDs directly to the backend, including flow_id
+    const backendParams = {
+      ...params,
+      flow_id: flowId,
+    };
 
     // For SSE connections with FastAPI, we need to use POST
     // First, create the controller
@@ -194,7 +197,53 @@ export const api = {
                     case 'complete':
                       // Store the complete event data in the node context
                       if (eventData.data) {
-                        nodeContext.setOutputNodeData(flowId, eventData.data as OutputNodeData);
+                        // Use flow_id from backend if available, otherwise use the one from request
+                        const effectiveFlowId = eventData.data.flow_id || flowId;
+                        
+                        const pmNodeIds = params.graph_nodes
+                          .filter(node => extractBaseAgentKey(node.id) === 'portfolio_manager')
+                          .map(node => node.id);
+                        console.log('PM node IDs:', pmNodeIds);
+                        console.log('analyst_signals keys:', Object.keys(eventData.data.analyst_signals || {}));
+
+                        if (pmNodeIds.length <= 1) {
+                          // Single PM original behavior, no change
+                          // If decisions are keyed by PM (new behavior), use the first PM's decisions
+                          const decisions = typeof eventData.data.decisions === 'object' && 
+                                           !Array.isArray(eventData.data.decisions) && 
+                                           Object.keys(eventData.data.decisions || {}).some(k => k.startsWith('portfolio_manager')) 
+                                            ? Object.values(eventData.data.decisions)[0] 
+                                            : eventData.data.decisions;
+                          
+                          nodeContext.setOutputNodeData(effectiveFlowId, {
+                            ...eventData.data,
+                            decisions
+                          } as OutputNodeData);
+                        } else {
+                          // Multiple PMs - process each PM
+                          pmNodeIds.forEach(pmId => {
+                            let pmDecisions;
+                            
+                            // Check if decisions are keyed by PM (new behavior)
+                            if (typeof eventData.data.decisions === 'object' && 
+                                !Array.isArray(eventData.data.decisions) && 
+                                eventData.data.decisions[pmId]) {
+                              pmDecisions = eventData.data.decisions[pmId];
+                            } else {
+                              // Fallback: if decisions are not keyed by PM (old behavior), use all decisions
+                              pmDecisions = eventData.data.decisions;
+                            }
+                            
+                            const pmData = {
+                              ...eventData.data,
+                              analyst_signals: eventData.data.analyst_signals, // Keep all signals
+                              decisions: pmDecisions
+                            };
+                            
+                            console.log('Storing data for PM:', pmId, 'key:', `${effectiveFlowId}:${pmId}`, 'data:', pmData);
+                            nodeContext.setOutputNodeData(effectiveFlowId, pmData as OutputNodeData, pmId);
+                          });
+                        }
                       }
                       // Mark all agents as complete when the whole process is done
                       nodeContext.updateAgentNodes(flowId, getAgentIds(), 'COMPLETE');

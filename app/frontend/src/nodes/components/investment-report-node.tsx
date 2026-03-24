@@ -4,7 +4,6 @@ import { useState } from 'react';
 
 import { CardContent } from '@/components/ui/card';
 import { useFlowContext } from '@/contexts/flow-context';
-import { useNodeContext } from '@/contexts/node-context';
 import { useOutputNodeConnection } from '@/hooks/use-output-node-connection';
 import { type InvestmentReportNode } from '../types';
 import { InvestmentReportDialog } from './investment-report-dialog';
@@ -17,17 +16,14 @@ export function InvestmentReportNode({
   id,
   isConnectable,
 }: NodeProps<InvestmentReportNode>) {  
-  const { currentFlowId } = useFlowContext();
-  const { getOutputNodeDataForFlow } = useNodeContext();
-  
-  // Get output node data for the current flow
-  const flowId = currentFlowId?.toString() || null;
-  const outputNodeData = getOutputNodeDataForFlow(flowId);
+  const { effectiveFlowId } = useFlowContext();
+  const flowId = effectiveFlowId;
+  console.log('InvestmentReportNode:', { id, flowId });
   
   const [showOutput, setShowOutput] = useState(false);
   
-  // Use the custom hook for connection logic
-  const { isProcessing, isAnyAgentRunning, isOutputAvailable, isConnected, connectedAgentIds } = useOutputNodeConnection(id);
+  const { isProcessing, isAnyAgentRunning, isOutputAvailable, isConnected, connectedAgentIds, outputNodeData } = useOutputNodeConnection(id, flowId);
+
   const status = isProcessing || isAnyAgentRunning ? 'IN_PROGRESS' : 'IDLE';
 
   const handleViewOutput = () => {

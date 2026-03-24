@@ -1,30 +1,19 @@
 import { getConnectedEdges, useReactFlow } from '@xyflow/react';
 import { useMemo } from 'react';
 
-import { useFlowContext } from '@/contexts/flow-context';
 import { useNodeContext } from '@/contexts/node-context';
+import { extractBaseAgentKey } from '@/data/node-mappings';
 
-/**
- * Custom hook to determine output node connection state and processing status
- * @param nodeId - The ID of the output node
- * @returns Object containing connection state and processing status
- */
-export function useOutputNodeConnection(nodeId: string) {
-  const { currentFlowId } = useFlowContext();
+export function useOutputNodeConnection(nodeId: string, flowId: string | null = null) {
   const { getAgentNodeDataForFlow, getOutputNodeDataForFlow } = useNodeContext();
   const { getNodes, getEdges } = useReactFlow();
 
-  // Get data for the current flow
-  const flowId = currentFlowId?.toString() || null;
   const agentNodeData = getAgentNodeDataForFlow(flowId);
-  const outputNodeData = getOutputNodeDataForFlow(flowId);
 
   return useMemo(() => {
-    // Get all nodes and edges
     const nodes = getNodes();
     const edges = getEdges();
     
-    // Find edges connected to this output node
     const connectedEdges = getConnectedEdges([{ id: nodeId }] as any, edges);
     const connectedAgentIds = connectedEdges
       .filter(edge => edge.target === nodeId)
@@ -34,18 +23,55 @@ export function useOutputNodeConnection(nodeId: string) {
         return sourceNode?.type === 'agent-node';
       });
 
-    // Check if any connected agents are running
+    const connectedPmId = (() => {
+      // Step 1: direct PM connection
+      const directPm = connectedAgentIds.find(
+        agentId => extractBaseAgentKey(agentId) === 'portfolio_manager'
+      );
+      if (directPm) return directPm;
+
+      // Step 2: find PM that our connected analysts feed INTO
+      // Edges go: analyst → PM, so look for edges where source is one of our analysts
+      // and target is a PM node
+      const connectedSet = new Set(connectedAgentIds);
+      for (const edge of edges) {
+        if (!connectedSet.has(edge.source)) continue;
+        const targetNode = nodes.find(n => n.id === edge.target);
+        if (
+          targetNode &&
+          extractBaseAgentKey(targetNode.id) === 'portfolio_manager'
+        ) {
+          return targetNode.id;
+        }
+      }
+      return null;
+    })();
+
+     const outputNodeData = (!flowId || !connectedPmId) 
+      ? (() => {
+          console.log('[Hook] Missing info:', { flowId, connectedPmId });
+          return null;
+        })()
+      : (() => {
+          const data = getOutputNodeDataForFlow(flowId, connectedPmId);
+          console.log(`[Hook] Key: ${flowId}:${connectedPmId}, Found:`, !!data);
+          return data;
+        })();
+
+    console.log('useOutputNodeConnection:', { 
+      nodeId, 
+      flowId, 
+      connectedAgentIds, 
+      connectedPmId 
+    });
+    console.log('outputNodeData:', outputNodeData);
+
     const isAnyAgentRunning = connectedAgentIds.some(agentId => 
       agentNodeData[agentId]?.status === 'IN_PROGRESS'
     );
 
-    // Check if processing (any agent is running)
     const isProcessing = isAnyAgentRunning;
-
-    // Check if output is available
     const isOutputAvailable = outputNodeData !== null && outputNodeData !== undefined;
-
-    // Check if connected to any agents  
     const isConnected = connectedAgentIds.length > 0;
 
     return {
@@ -54,6 +80,8 @@ export function useOutputNodeConnection(nodeId: string) {
       isOutputAvailable,
       isConnected,
       connectedAgentIds: new Set(connectedAgentIds),
+      connectedPmId,
+      outputNodeData,
     };
-  }, [nodeId, agentNodeData, outputNodeData, getNodes, getEdges]);
-} 
+  }, [nodeId, flowId, agentNodeData, getOutputNodeDataForFlow, getNodes, getEdges]);
+}

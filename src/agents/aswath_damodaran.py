@@ -36,7 +36,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
     data      = state["data"]
     end_date  = data["end_date"]
     tickers   = data["tickers"]
-    api_key  = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key  = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
 
     analysis_data: dict[str, dict] = {}
     damodaran_signals: dict[str, dict] = {}
@@ -50,6 +50,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
         line_items = search_line_items(
             ticker,
             [
+                "revenue"
                 "free_cash_flow",
                 "ebit",
                 "interest_expense",
@@ -153,7 +154,12 @@ def analyze_growth_and_reinvestment(metrics: list, line_items: list) -> dict[str
         return {"score": 0, "max_score": max_score, "details": "Insufficient history"}
 
     # Revenue CAGR (oldest to latest)
-    revs = [m.revenue for m in reversed(metrics) if hasattr(m, "revenue") and m.revenue]
+    # In analyze_growth_and_reinvestment, replace revs with:
+    revs = [
+        getattr(li, "revenue", None)
+        for li in reversed(line_items)
+        if getattr(li, "revenue", None)
+    ]
     if len(revs) >= 2 and revs[0] > 0:
         cagr = (revs[-1] / revs[0]) ** (1 / (len(revs) - 1)) - 1
     else:
@@ -174,7 +180,7 @@ def analyze_growth_and_reinvestment(metrics: list, line_items: list) -> dict[str
         details.append("Revenue data incomplete")
 
     # FCFF growth (proxy: free_cash_flow trend)
-    fcfs = [li.free_cash_flow for li in reversed(line_items) if li.free_cash_flow]
+    fcfs = [getattr(li, "free_cash_flow", None) for li in reversed(line_items) if getattr(li, "free_cash_flow", None)]
     if len(fcfs) >= 2 and fcfs[-1] > fcfs[0]:
         score += 1
         details.append("Positive FCFF growth")
@@ -227,8 +233,9 @@ def analyze_risk_profile(metrics: list, line_items: list) -> dict[str, any]:
         details.append("D/E NA")
 
     # Interest coverage
-    ebit = getattr(latest, "ebit", None)
-    interest = getattr(latest, "interest_expense", None)
+    latest_li = line_items[0] if line_items else None
+    ebit = getattr(latest_li, "ebit", None)
+    interest = getattr(latest_li, "interest_expense", None)
     if ebit and interest and interest != 0:
         coverage = ebit / abs(interest)
         if coverage > 3:
@@ -293,14 +300,18 @@ def calculate_intrinsic_value_dcf(metrics: list, line_items: list, risk_analysis
     if not metrics or len(metrics) < 2 or not line_items:
         return {"intrinsic_value": None, "details": ["Insufficient data"]}
 
-    latest_m = metrics[0]
-    fcff0 = getattr(latest_m, "free_cash_flow", None)
-    shares = getattr(line_items[0], "outstanding_shares", None)
-    if not fcff0 or not shares:
+    latest_li = line_items[0]
+    fcff0 = getattr(latest_li, "free_cash_flow", None)
+    shares = getattr(latest_li, "outstanding_shares", None)
+    if fcff0 is None or shares is None or shares == 0:
         return {"intrinsic_value": None, "details": ["Missing FCFF or share count"]}
 
     # Growth assumptions
-    revs = [m.revenue for m in reversed(metrics) if m.revenue]
+    revs = [
+        getattr(li, "revenue", None)
+        for li in reversed(line_items)
+        if getattr(li, "revenue", None)
+    ]
     if len(revs) >= 2 and revs[0] > 0:
         base_growth = min((revs[-1] / revs[0]) ** (1 / (len(revs) - 1)) - 1, 0.12)
     else:

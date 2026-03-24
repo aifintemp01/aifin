@@ -15,6 +15,13 @@ class CathieWoodSignal(BaseModel):
     confidence: float
     reasoning: str
 
+def _safe_get(obj, attr: str):
+    """Safely get an attribute from a Pydantic model or dict."""
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    elif isinstance(obj, dict):
+        return obj.get(attr)
+    return None
 
 def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
     """
@@ -27,7 +34,7 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     analysis_data = {}
     cw_analysis = {}
 
@@ -125,7 +132,7 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
         return {"score": 0, "details": "Insufficient data to analyze disruptive potential"}
 
     # 1. Revenue Growth Analysis - Check for accelerating growth
-    revenues = [item.revenue for item in financial_line_items if item.revenue]
+    revenues = [_safe_get(item, "revenue") for item in financial_line_items if _safe_get(item, "revenue")]
     if len(revenues) >= 3:  # Need at least 3 periods to check acceleration
         growth_rates = []
         for i in range(len(revenues) - 1):
@@ -153,7 +160,7 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
         details.append("Insufficient revenue data for growth analysis")
 
     # 2. Gross Margin Analysis - Check for expanding margins
-    gross_margins = [item.gross_margin for item in financial_line_items if hasattr(item, "gross_margin") and item.gross_margin is not None]
+    gross_margins = [_safe_get(item, "gross_margin") for item in financial_line_items if _safe_get(item, "gross_margin") is not None]
     if len(gross_margins) >= 2:
         margin_trend = gross_margins[0] - gross_margins[-1]
         if margin_trend > 0.05:  # 5% improvement
@@ -171,8 +178,8 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
         details.append("Insufficient gross margin data")
 
     # 3. Operating Leverage Analysis
-    revenues = [item.revenue for item in financial_line_items if item.revenue]
-    operating_expenses = [item.operating_expense for item in financial_line_items if hasattr(item, "operating_expense") and item.operating_expense]
+    revenues = [_safe_get(item, "revenue") for item in financial_line_items if _safe_get(item, "revenue")]
+    operating_expenses = [_safe_get(item, "operating_expense") for item in financial_line_items if _safe_get(item, "operating_expense")]
 
     if len(revenues) >= 2 and len(operating_expenses) >= 2:
         rev_growth = (revenues[0] - revenues[-1]) / abs(revenues[-1])
@@ -185,7 +192,7 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
         details.append("Insufficient data for operating leverage analysis")
 
     # 4. R&D Investment Analysis
-    rd_expenses = [item.research_and_development for item in financial_line_items if hasattr(item, "research_and_development") and item.research_and_development is not None]
+    rd_expenses = [_safe_get(item, "research_and_development") for item in financial_line_items if _safe_get(item, "research_and_development") is not None]
     if rd_expenses and revenues:
         rd_intensity = rd_expenses[0] / revenues[0]
         if rd_intensity > 0.15:  # High R&D intensity
@@ -224,8 +231,8 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
         return {"score": 0, "details": "Insufficient data to analyze innovation-driven growth"}
 
     # 1. R&D Investment Trends
-    rd_expenses = [item.research_and_development for item in financial_line_items if hasattr(item, "research_and_development") and item.research_and_development]
-    revenues = [item.revenue for item in financial_line_items if item.revenue]
+    rd_expenses = [_safe_get(item, "research_and_development") for item in financial_line_items if _safe_get(item, "research_and_development")]
+    revenues = [_safe_get(item, "revenue") for item in financial_line_items if _safe_get(item, "revenue")]
 
     if rd_expenses and revenues and len(rd_expenses) >= 2:
         rd_growth = (rd_expenses[0] - rd_expenses[-1]) / abs(rd_expenses[-1]) if rd_expenses[-1] != 0 else 0
@@ -246,7 +253,7 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
         details.append("Insufficient R&D data for trend analysis")
 
     # 2. Free Cash Flow Analysis
-    fcf_vals = [item.free_cash_flow for item in financial_line_items if item.free_cash_flow]
+    fcf_vals = [_safe_get(item, "free_cash_flow") for item in financial_line_items if _safe_get(item, "free_cash_flow")]
     if fcf_vals and len(fcf_vals) >= 2:
         fcf_growth = (fcf_vals[0] - fcf_vals[-1]) / abs(fcf_vals[-1])
         positive_fcf_count = sum(1 for f in fcf_vals if f > 0)
@@ -264,7 +271,13 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
         details.append("Insufficient FCF data for analysis")
 
     # 3. Operating Efficiency Analysis
-    op_margin_vals = [item.operating_margin for item in financial_line_items if item.operating_margin]
+    # Calculate operating margin from operating_income and revenue
+    op_margin_vals = []
+    for item in financial_line_items:
+        operating_income = _safe_get(item, "operating_income")
+        revenue = _safe_get(item, "revenue")
+        if operating_income is not None and revenue is not None and revenue != 0:
+            op_margin_vals.append(operating_income / revenue)
     if op_margin_vals and len(op_margin_vals) >= 2:
         margin_trend = op_margin_vals[0] - op_margin_vals[-1]
 
@@ -281,7 +294,7 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
         details.append("Insufficient operating margin data")
 
     # 4. Capital Allocation Analysis
-    capex = [item.capital_expenditure for item in financial_line_items if hasattr(item, "capital_expenditure") and item.capital_expenditure]
+    capex = [_safe_get(item, "capital_expenditure") for item in financial_line_items if _safe_get(item, "capital_expenditure")]
     if capex and revenues and len(capex) >= 2:
         capex_intensity = abs(capex[0]) / revenues[0]
         capex_growth = (abs(capex[0]) - abs(capex[-1])) / abs(capex[-1]) if capex[-1] != 0 else 0
@@ -296,7 +309,7 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
         details.append("Insufficient CAPEX data")
 
     # 5. Growth Reinvestment Analysis
-    dividends = [item.dividends_and_other_cash_distributions for item in financial_line_items if hasattr(item, "dividends_and_other_cash_distributions") and item.dividends_and_other_cash_distributions]
+    dividends = [_safe_get(item, "dividends_and_other_cash_distributions") for item in financial_line_items if _safe_get(item, "dividends_and_other_cash_distributions")]
     if dividends and fcf_vals:
         latest_payout_ratio = dividends[0] / fcf_vals[0] if fcf_vals[0] != 0 else 1
         if latest_payout_ratio < 0.2:  # Low dividend payout ratio suggests reinvestment focus
@@ -325,7 +338,7 @@ def analyze_cathie_wood_valuation(financial_line_items: list, market_cap: float)
         return {"score": 0, "details": "Insufficient data for valuation"}
 
     latest = financial_line_items[0]
-    fcf = latest.free_cash_flow if latest.free_cash_flow else 0
+    fcf = getattr(latest, "free_cash_flow", None) or 0
 
     if fcf <= 0:
         return {"score": 0, "details": f"No positive FCF for valuation; FCF = {fcf}", "intrinsic_value": None}

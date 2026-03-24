@@ -181,7 +181,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
 }
 
 interface LayoutProps {
-  children: ReactNode;
+  children?: ReactNode;
 }
 
 export function Layout({ children }: LayoutProps) {

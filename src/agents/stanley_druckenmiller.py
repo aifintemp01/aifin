@@ -17,11 +17,18 @@ from src.utils.llm import call_llm
 import statistics
 from src.utils.api_key import get_api_key_from_state
 
+
 class StanleyDruckenmillerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
 
+def _safe_get(obj, attr: str):
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    elif isinstance(obj, dict):
+        return obj.get(attr)
+    return None
 
 def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druckenmiller_agent"):
     """
@@ -37,7 +44,7 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
     start_date = data["start_date"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     analysis_data = {}
     druck_analysis = {}
 
@@ -179,7 +186,7 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     #
     # 1. Revenue Growth (annualized CAGR)
     #
-    revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
+    revenues = [_safe_get(fi, "revenue") for fi in financial_line_items if _safe_get(fi, "revenue") is not None]
     if len(revenues) >= 2:
         latest_rev = revenues[0]
         older_rev = revenues[-1]
@@ -206,7 +213,7 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     #
     # 2. EPS Growth (annualized CAGR)
     #
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values = [_safe_get(fi, "earnings_per_share") for fi in financial_line_items if _safe_get(fi, "earnings_per_share") is not None]
     if len(eps_values) >= 2:
         latest_eps = eps_values[0]
         older_eps = eps_values[-1]
@@ -364,8 +371,8 @@ def analyze_risk_reward(financial_line_items: list, prices: list) -> dict:
     #
     # 1. Debt-to-Equity
     #
-    debt_values = [fi.total_debt for fi in financial_line_items if fi.total_debt is not None]
-    equity_values = [fi.shareholders_equity for fi in financial_line_items if fi.shareholders_equity is not None]
+    debt_values = [_safe_get(fi, "total_debt") for fi in financial_line_items if _safe_get(fi, "total_debt") is not None]
+    equity_values = [_safe_get(fi, "shareholders_equity") for fi in financial_line_items if _safe_get(fi, "shareholders_equity") is not None]
 
     if debt_values and equity_values and len(debt_values) == len(equity_values) and len(debt_values) > 0:
         recent_debt = debt_values[0]
@@ -438,14 +445,14 @@ def analyze_druckenmiller_valuation(financial_line_items: list, market_cap: floa
     raw_score = 0
 
     # Gather needed data
-    net_incomes = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
-    fcf_values = [fi.free_cash_flow for fi in financial_line_items if fi.free_cash_flow is not None]
-    ebit_values = [fi.ebit for fi in financial_line_items if fi.ebit is not None]
-    ebitda_values = [fi.ebitda for fi in financial_line_items if fi.ebitda is not None]
+    net_incomes = [_safe_get(fi, "net_income") for fi in financial_line_items if _safe_get(fi, "net_income") is not None]
+    fcf_values = [_safe_get(fi, "free_cash_flow") for fi in financial_line_items if _safe_get(fi, "free_cash_flow") is not None]
+    ebit_values = [_safe_get(fi, "ebit") for fi in financial_line_items if _safe_get(fi, "ebit") is not None]
+    ebitda_values = [_safe_get(fi, "ebitda") for fi in financial_line_items if _safe_get(fi, "ebitda") is not None]
 
     # For EV calculation, let's get the most recent total_debt & cash
-    debt_values = [fi.total_debt for fi in financial_line_items if fi.total_debt is not None]
-    cash_values = [fi.cash_and_equivalents for fi in financial_line_items if fi.cash_and_equivalents is not None]
+    debt_values = [_safe_get(fi, "total_debt") for fi in financial_line_items if _safe_get(fi, "total_debt") is not None]
+    cash_values = [_safe_get(fi, "cash_and_equivalents") for fi in financial_line_items if _safe_get(fi, "cash_and_equivalents") is not None]
     recent_debt = debt_values[0] if debt_values else 0
     recent_cash = cash_values[0] if cash_values else 0
 

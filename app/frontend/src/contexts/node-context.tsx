@@ -1,5 +1,5 @@
 import { LanguageModel } from '@/data/models';
-import { createContext, ReactNode, useCallback, useContext, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useState, useMemo } from 'react';
 
 export type NodeStatus = 'IDLE' | 'IN_PROGRESS' | 'COMPLETE' | 'ERROR';
 
@@ -66,7 +66,7 @@ interface NodeContextType {
   agentModels: Record<string, LanguageModel | null>;
   updateAgentNode: (flowId: string | null, nodeId: string, data: Partial<AgentNodeData> | NodeStatus) => void;
   updateAgentNodes: (flowId: string | null, nodeIds: string[], status: NodeStatus) => void;
-  setOutputNodeData: (flowId: string | null, data: OutputNodeData) => void;
+  setOutputNodeData: (flowId: string | null, data: OutputNodeData, pmNodeId?:string) => void;
   setAgentModel: (flowId: string | null, nodeId: string, model: LanguageModel | null) => void;
   getAgentModel: (flowId: string | null, nodeId: string) => LanguageModel | null;
   getAllAgentModels: (flowId: string | null) => Record<string, LanguageModel | null>;
@@ -82,7 +82,7 @@ interface NodeContextType {
   }) => void;
   // New flow-aware functions
   getAgentNodeDataForFlow: (flowId: string | null) => Record<string, AgentNodeData>;
-  getOutputNodeDataForFlow: (flowId: string | null) => OutputNodeData | null;
+  getOutputNodeDataForFlow: (flowId: string | null, pmNodeId?: string) => OutputNodeData | null;
 }
 
 const NodeContext = createContext<NodeContextType | undefined>(undefined);
@@ -226,13 +226,22 @@ export function NodeProvider({ children }: { children: ReactNode }) {
     return currentFlowModels;
   }, [agentModels]);
 
-  const setOutputNodeDataForFlow = useCallback((flowId: string | null, data: OutputNodeData) => {
-    if (!flowId) {
-      // If no flow ID, use 'default' as key for backward compatibility
-      setOutputNodeData(prev => ({ ...prev, 'default': data }));
-    } else {
-      setOutputNodeData(prev => ({ ...prev, [flowId]: data }));
-    }
+  // const setOutputNodeDataForFlow = useCallback((flowId: string | null, data: OutputNodeData,) => {
+  //   if (!flowId) {
+  //     // If no flow ID, use 'default' as key for backward compatibility
+  //     setOutputNodeData(prev => ({ ...prev, 'default': data }));
+  //   } else {
+  //     setOutputNodeData(prev => ({ ...prev, [flowId]: data }));
+  //   }
+  // }, []);
+
+  const setOutputNodeDataForFlow = useCallback((flowId: string | null, data: OutputNodeData, pmNodeId?: string) => {
+    const key = pmNodeId ? `${flowId}:${pmNodeId}` : (flowId || 'default');
+    setOutputNodeData(prev => {
+      const newState = { ...prev, [key]: data };
+      console.log('setOutputNodeDataForFlow - Key:', key, 'Stored keys:', Object.keys(newState));
+      return newState;
+    });
   }, []);
 
   const resetAllNodes = useCallback((flowId: string | null) => {
@@ -254,10 +263,21 @@ export function NodeProvider({ children }: { children: ReactNode }) {
         return newData;
       });
       
-      // Clear output data for specified flow
+      // // Clear output data for specified flow
+      // setOutputNodeData(prev => {
+      //   const { [flowId]: removed, ...rest } = prev;
+      //   return rest;
+      // });
+
+      // Clear output data for specified flow (covers both flowId and flowId:pmNodeId keys)
       setOutputNodeData(prev => {
-        const { [flowId]: removed, ...rest } = prev;
-        return rest;
+        const newData: Record<string, OutputNodeData> = {};
+        Object.entries(prev).forEach(([key, value]) => {
+          if (!key.startsWith(flowId)) {
+            newData[key] = value;
+          }
+        });
+        return newData;
       });
     }
     
@@ -389,17 +409,22 @@ export function NodeProvider({ children }: { children: ReactNode }) {
     return currentFlowData;
   }, [agentNodeData]);
 
-  const getOutputNodeDataForFlow = useCallback((flowId: string | null): OutputNodeData | null => {
-    if (!flowId) {
-      // If no flow ID, return 'default' data for backward compatibility
-      return outputNodeData['default'] || null;
-    }
+  // const getOutputNodeDataForFlow = useCallback((flowId: string | null): OutputNodeData | null => {
+  //   if (!flowId) {
+  //     // If no flow ID, return 'default' data for backward compatibility
+  //     return outputNodeData['default'] || null;
+  //   }
     
-    return outputNodeData[flowId] || null;
+  //   return outputNodeData[flowId] || null;
+  // }, [outputNodeData]);
+
+  const getOutputNodeDataForFlow = useCallback((flowId: string | null, pmNodeId?: string): OutputNodeData | null => {
+    const key = pmNodeId ? `${flowId}:${pmNodeId}` : (flowId || 'default');
+    return outputNodeData[key] || null;
   }, [outputNodeData]);
 
   // Context value object
-  const contextValue = {
+  const contextValue = useMemo(() =>({
     // Legacy getters for backward compatibility - these will return empty data
     // Components should use the explicit flow-based functions instead
     agentNodeData: {},
@@ -415,10 +440,23 @@ export function NodeProvider({ children }: { children: ReactNode }) {
     resetNodeStatuses,
     exportNodeContextData,
     importNodeContextData,
-    // New flow-aware functions
     getAgentNodeDataForFlow,
     getOutputNodeDataForFlow,
-  };
+  }), [
+    agentModels, 
+    updateAgentNode, 
+    updateAgentNodes, 
+    setOutputNodeDataForFlow, 
+    setAgentModel, 
+    getAgentModel, 
+    getAllAgentModels, 
+    resetAllNodes, 
+    resetNodeStatuses, 
+    exportNodeContextData, 
+    importNodeContextData, 
+    getAgentNodeDataForFlow, 
+    getOutputNodeDataForFlow
+]);
 
   return (
     <NodeContext.Provider value={contextValue}>

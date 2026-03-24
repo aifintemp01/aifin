@@ -15,6 +15,13 @@ class BillAckmanSignal(BaseModel):
     confidence: float
     reasoning: str
 
+def _safe_get(obj, attr: str):
+    """Safely get an attribute from a Pydantic model or dict."""
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    elif isinstance(obj, dict):
+        return obj.get(attr)
+    return None
 
 def bill_ackman_agent(state: AgentState, agent_id: str = "bill_ackman_agent"):
     """
@@ -25,7 +32,7 @@ def bill_ackman_agent(state: AgentState, agent_id: str = "bill_ackman_agent"):
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     analysis_data = {}
     ackman_analysis = {}
     
@@ -168,7 +175,13 @@ def analyze_business_quality(metrics: list, financial_line_items: list) -> dict:
     
     # 2. Operating margin and free cash flow consistency
     fcf_vals = [item.free_cash_flow for item in financial_line_items if item.free_cash_flow is not None]
-    op_margin_vals = [item.operating_margin for item in financial_line_items if item.operating_margin is not None]
+    # Calculate operating margin from operating_income and revenue
+    op_margin_vals = []
+    for item in financial_line_items:
+        operating_income = item.operating_income
+        revenue = item.revenue
+        if operating_income is not None and revenue is not None and revenue != 0:
+            op_margin_vals.append(operating_income / revenue)
     
     if op_margin_vals:
         above_15 = sum(1 for m in op_margin_vals if m > 0.15)
@@ -304,7 +317,13 @@ def analyze_activism_potential(financial_line_items: list) -> dict:
     
     # Check revenue growth vs. operating margin
     revenues = [item.revenue for item in financial_line_items if item.revenue is not None]
-    op_margins = [item.operating_margin for item in financial_line_items if item.operating_margin is not None]
+    # Calculate operating margin from operating_income and revenue
+    op_margins = []
+    for item in financial_line_items:
+        operating_income = _safe_get(item, "operating_income")
+        revenue = _safe_get(item, "revenue")
+        if operating_income is not None and revenue is not None and revenue != 0:
+            op_margins.append(operating_income / revenue)
     
     if len(revenues) < 2 or not op_margins:
         return {
@@ -346,7 +365,7 @@ def analyze_valuation(financial_line_items: list, market_cap: float) -> dict:
     # Since financial_line_items are in descending order (newest first),
     # the most recent period is the first element
     latest = financial_line_items[0]
-    fcf = latest.free_cash_flow if latest.free_cash_flow else 0
+    fcf = _safe_get(latest, "free_cash_flow") if _safe_get(latest, "free_cash_flow") else 0
     
     if fcf <= 0:
         return {

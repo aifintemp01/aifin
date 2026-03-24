@@ -19,9 +19,51 @@ from src.agents.rakesh_jhunjhunwala import rakesh_jhunjhunwala_agent
 from src.agents.mohnish_pabrai import mohnish_pabrai_agent
 from src.agents.news_sentiment import news_sentiment_agent
 from src.agents.growth_agent import growth_analyst_agent
+from src.agents.value_agent import value_pack_agent
+from src.agents.quality_agent import quality_pack_agent
+from src.agents.momentum_agent import momentum_agent
+from src.agents.liquidity_agent import liquidity_agent
+from src.agents.macro_exposure_agent import macro_exposure_agent
+from src.agents.governance_agent import governance_agent
+from src.agents.factorcomposite_agent import factor_composite_agent
+from src.agents.capital_allocation import capital_allocation_agent
+from src.agents.market_regime_agent import market_regime_agent
+from src.agents.capital_flow_agent import capital_flow_agent
 
 # Define analyst configuration - single source of truth
 ANALYST_CONFIG = {
+    "capital_flow": {
+        "display_name": "Capital Flow Analyst",
+        "description": "Capital Flow Specialist",
+        "investing_style": "Analyzes capital flow patterns using sector rotation and risk appetite proxies. Since direct FII/DII institutional flow data is not available via Twelve Data, this agent uses sector rotation analysis as a proven capital flow proxy: Cyclical vs defensive sector performance differential, Risk-on vs risk-off asset rotation (equities vs gold), Sector breadth: how many sectors are participating in the trend, Relative strength of benchmark vs safe haven. Institutional capital flows into cyclicals and out of defensives in risk-on regimes. The reverse signals institutional risk reduction and potential market weakness. Dynamically selects India sector indices or US sector ETFs based on ticker universe.",
+        "agent_func": capital_flow_agent,
+        "type": "analyst",
+        "order": 26,
+    },
+    "market_regime": {
+        "display_name": "Market Regime Analyst",
+        "description": "Market Regime Specialist",
+        "investing_style": "Analyzes the macro market regime using VIX and benchmark price data. Dynamically selects India VIX + Nifty 50 for Indian ticker universes, or CBOE VIX + SPY for US ticker universes. Sub-analyses: VIX level and trend (fear gauge), VIX term structure proxy, benchmark trend (50D and 200D moving averages), market breadth proxy. Low VIX + uptrending benchmark = risk-on regime (bullish); High VIX + downtrending benchmark = risk-off regime (bearish).",
+        "agent_func": market_regime_agent,
+        "type": "analyst",
+        "order": 25,
+    },
+    "capital_allocation": {
+        "display_name": "Capital Allocation Analyst",
+        "description": "Capital Allocation Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive capital allocation framework. Focuses on how management deploys the cash the business generates: Dividend growth (Dividend CAGR) — is capital returned consistently? Share dilution rate — are shareholders being respected or taxed? Buyback yield — is capital returned via repurchases? Return on incremental capital (ROIC delta) — is new capital deployed wisely? Net debt change trend — is the balance sheet strengthening or deteriorating? Great capital allocators compound wealth. Poor ones destroy it quietly.",
+        "agent_func": capital_allocation_agent,
+        "type": "analyst",
+        "order": 24,
+    },
+    "factor_composite": {
+        "display_name": "Factor Composite Analyst",
+        "description": "Comprehensive Factor Risk Analysis Specialist",
+        "investing_style": "Analyzes stocks using a factor composite framework focused on financial risk. Combines two core dimensions: earnings volatility (standard deviation of EPS growth) and balance sheet stress ((Debt/Equity) × (1 / Interest Coverage)). Low volatility + low stress = resilient, predictable businesses that survive downturns and compound through cycles.",
+        "agent_func": factor_composite_agent,
+        "type": "analyst",
+        "order": 23,
+    },
     "aswath_damodaran": {
         "display_name": "Aswath Damodaran",
         "description": "The Dean of Valuation",
@@ -165,6 +207,54 @@ ANALYST_CONFIG = {
         "agent_func": valuation_analyst_agent,
         "type": "analyst",
         "order": 16,
+    },
+    "value_pack": {
+        "display_name": "Value Pack Analyst",
+        "description": "Comprehensive Value Investing Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive value investing framework. Focuses on intrinsic value metrics: FCF yield, PE, PB, EV/EBITDA, ROIC, debt-to-equity, margin of safety, and normalized FCF. Designed as a pure value-oriented philosophy agent.",
+        "agent_func": value_pack_agent,
+        "type": "analyst",
+        "order": 17,
+    },
+    "quality_pack": {
+        "display_name": "Quality Pack Analyst",
+        "description": "Comprehensive Quality Investing Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive quality investing framework. Focuses on the durability and consistency of financial performance: ROCE, ROE, operating margins, revenue and EPS CAGR stability, FCF conversion efficiency, and operating cash flow consistency. Designed to identify high-quality businesses with durable competitive advantages.",
+        "agent_func": quality_pack_agent,
+        "type": "analyst",
+        "order": 18,
+    },
+    "momentum": {
+        "display_name": "Momentum Analyst",
+        "description": "Comprehensive Momentum Investing Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive price momentum framework. Focuses on multi-period returns (1D, 1W, 1M, 3M, 6M, 12M), rolling CAGR, maximum drawdown, 12M return excluding last 1M (classic momentum factor), RSI, and volatility-adjusted return (Sharpe-like ratio). A stock with strong, consistent, risk-adjusted momentum across multiple timeframes is a high-conviction candidate.",
+        "agent_func": momentum_agent,
+        "type": "analyst",
+        "order": 19,
+    },
+    "liquidity": {
+        "display_name": "Liquidity Analyst",
+        "description": "Comprehensive Liquidity Analysis Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive liquidity framework. Focuses on volume metrics (daily volume, 30D avg volume), traded value, Amihud illiquidity ratio, and impact cost proxy via high-low spread. High liquidity reduces execution risk and signals institutional confidence. Low liquidity stocks carry hidden transaction costs that erode returns.",
+        "agent_func": liquidity_agent,
+        "type": "analyst",
+        "order": 20,
+    },
+    "macro_exposure": {
+        "display_name": "Macro Exposure Analyst",
+        "description": "Comprehensive Macro Exposure Analysis Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive macro exposure framework. Assesses a company's sensitivity to macroeconomic forces via financial statement proxies: interest rate sensitivity (debt load, interest coverage, leverage), inflation sensitivity (gross margin stability, capex intensity), and FX dependency (international revenue exposure, geographic concentration). Companies with low debt, stable margins, and domestic revenue are more resilient across macro regimes.",
+        "agent_func": macro_exposure_agent,
+        "type": "analyst",
+        "order": 21,
+    },
+    "governance": {
+        "display_name": "Governance Analyst",
+        "description": "Comprehensive Corporate Governance Analysis Specialist",
+        "investing_style": "Analyzes stocks using a comprehensive corporate governance framework. Since promoter holdings, pledge data, auditor history, and related party transactions are not available in the current data model, governance quality is assessed via four available proxies: insider ownership trend (net insider buying/selling as skin-in-the-game proxy), share dilution trend (outstanding shares growth as shareholder alignment proxy), earnings integrity (FCF conversion quality as accounting quality proxy), and news-based governance flags (negative press around governance red flags). Good governance compounds returns. Poor governance destroys them silently.",
+        "agent_func": governance_agent,
+        "type": "analyst",
+        "order": 22,
     },
 }
 

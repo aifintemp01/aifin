@@ -16,6 +16,13 @@ class BenGrahamSignal(BaseModel):
     confidence: float
     reasoning: str
 
+def _safe_get(obj, attr: str):
+    """Safely get an attribute from a Pydantic model or dict."""
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    elif isinstance(obj, dict):
+        return obj.get(attr)
+    return None
 
 def ben_graham_agent(state: AgentState, agent_id: str = "ben_graham_agent"):
     """
@@ -28,7 +35,7 @@ def ben_graham_agent(state: AgentState, agent_id: str = "ben_graham_agent"):
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
-    api_key = get_api_key_from_state(state, "FINANCIAL_DATASETS_API_KEY")
+    api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     
     analysis_data = {}
     graham_analysis = {}
@@ -38,7 +45,7 @@ def ben_graham_agent(state: AgentState, agent_id: str = "ben_graham_agent"):
         metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Gathering financial line items")
-        financial_line_items = search_line_items(ticker, ["earnings_per_share", "revenue", "net_income", "book_value_per_share", "total_assets", "total_liabilities", "current_assets", "current_liabilities", "dividends_and_other_cash_distributions", "outstanding_shares"], end_date, period="annual", limit=10, api_key=api_key)
+        financial_line_items = search_line_items(ticker, ["earnings_per_share",                "revenue", "net_income", "book_value_per_share", "total_assets", "total_liabilities", "current_assets", "current_liabilities", "dividends_and_other_cash_distributions", "outstanding_shares"], end_date, period="annual", limit=10, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
@@ -184,7 +191,7 @@ def analyze_financial_strength(financial_line_items: list) -> dict:
         details.append("Cannot compute debt ratio (missing total_assets).")
 
     # 3. Dividend track record
-    div_periods = [item.dividends_and_other_cash_distributions for item in financial_line_items if item.dividends_and_other_cash_distributions is not None]
+    div_periods = [_safe_get(item, "dividends_and_other_cash_distributions") for item in financial_line_items if _safe_get(item, "dividends_and_other_cash_distributions") is not None]
     if div_periods:
         # In many data feeds, dividend outflow is shown as a negative number
         # (money going out to shareholders). We'll consider any negative as 'paid a dividend'.

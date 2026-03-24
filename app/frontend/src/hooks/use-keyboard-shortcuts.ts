@@ -18,6 +18,7 @@ export function useKeyboardShortcuts({ shortcuts }: UseKeyboardShortcutsProps) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       shortcuts.forEach(({ key, ctrlKey, metaKey, shiftKey, altKey, callback, preventDefault = true }) => {
+        if (!event.key || !key) return;
         const isCtrlMatch = ctrlKey ? event.ctrlKey : !event.ctrlKey;
         const isMetaMatch = metaKey ? event.metaKey : !event.metaKey;
         const isShiftMatch = shiftKey ? event.shiftKey : !event.shiftKey;

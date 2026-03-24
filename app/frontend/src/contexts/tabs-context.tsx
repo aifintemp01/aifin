@@ -124,6 +124,8 @@ export function TabsProvider({ children }: TabsProviderProps) {
           content: null, // Will be filled in by TabService when tabs are accessed
         }));
         
+        // Validate flow tabs - only keep tabs for flows that actually exist
+        // Since we don't have access to the flows here, we'll validate later when loading the tab content
         setTabs(restoredTabs);
         setActiveTabId(savedActiveTabId);
       }

@@ -16,7 +16,7 @@ interface FlowTabContentProps {
 
 export function FlowTabContent({ flow, className }: FlowTabContentProps) {
   const { loadFlow } = useFlowContext();
-  const { activeTabId } = useTabsContext();
+  const { activeTabId, closeTab } = useTabsContext();
 
   // Enhanced load function that restores both use-node-state and node context data
   const loadFlowWithCompleteState = async (flowToLoad: FlowType) => {
@@ -65,14 +65,18 @@ export function FlowTabContent({ flow, className }: FlowTabContentProps) {
           await loadFlowWithCompleteState(latestFlow);
         } catch (error) {
           console.error('Failed to fetch latest flow state:', error);
-          // Fallback to loading the cached flow data with complete state restoration
-          await loadFlowWithCompleteState(flow);
+          // If flow doesn't exist (404), close the tab instead of falling back to cached data
+          console.warn(`Flow ${flow.id} not found, closing tab`);
+          // Get tab ID to close
+          const tabId = `flow-${flow.id}`;
+          // Close the tab
+          closeTab(tabId);
         }
       };
 
       fetchAndLoadFlow();
     }
-  }, [activeTabId, flow.id, flow, loadFlow]);
+  }, [activeTabId, flow.id, flow, loadFlow, closeTab]);
 
   return (
     <div className={cn("h-full w-full", className)}>

@@ -127,14 +127,33 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                     return
 
                 # Send the final result
-                final_data = CompleteEvent(
-                    data={
-                        "decisions": parse_hedge_fund_response(result.get("messages", [])[-1].content),
-                        "analyst_signals": result.get("data", {}).get("analyst_signals", {}),
-                        "current_prices": result.get("data", {}).get("current_prices", {}),
-                    }
-                )
-                yield final_data.to_sse()
+                try:
+                    # Collect all portfolio manager messages and their decisions
+                    decisions = {}
+                    for message in result.get("messages", []):
+                        if message.name and message.name.startswith("portfolio_manager"):
+                            try:
+                                pm_decisions = parse_hedge_fund_response(message.content)
+                                if pm_decisions:
+                                    decisions[message.name] = pm_decisions
+                            except Exception as e:
+                                print(f"Error parsing decisions for {message.name}: {e}")
+                    
+                    # If no PM messages found (unlikely), fall back to last message
+                    if not decisions:
+                        decisions = parse_hedge_fund_response(result.get("messages", [])[-1].content)
+                    
+                    final_data = CompleteEvent(
+                        data={
+                            "flow_id": request_data.flow_id,
+                            "decisions": decisions,
+                            "analyst_signals": result.get("data", {}).get("analyst_signals", {}),
+                            "current_prices": result.get("data", {}).get("current_prices", {}),
+                        }
+                    )
+                    yield final_data.to_sse()
+                except Exception as e:
+                    print(f"Error in final data processing: {e}")
 
             except asyncio.CancelledError:
                 print("Event generator cancelled")
