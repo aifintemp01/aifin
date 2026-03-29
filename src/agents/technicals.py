@@ -1,9 +1,13 @@
 import math
 
 from langchain_core.messages import HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
+from typing_extensions import Literal
 
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.api_key import get_api_key_from_state
+from src.utils.llm import call_llm
 import json
 import pandas as pd
 import numpy as np
@@ -12,17 +16,14 @@ from src.tools.api import get_prices, prices_to_df
 from src.utils.progress import progress
 
 
+class TechnicalSignal(BaseModel):
+    signal: Literal["bullish", "bearish", "neutral"]
+    confidence: float
+    reasoning: str
+
+
 def safe_float(value, default=0.0):
-    """
-    Safely convert a value to float, handling NaN cases
-    
-    Args:
-        value: The value to convert (can be pandas scalar, numpy value, etc.)
-        default: Default value to return if the input is NaN or invalid
-    
-    Returns:
-        float: The converted value or default if NaN/invalid
-    """
+    """Safely convert a value to float, handling NaN cases."""
     try:
         if pd.isna(value) or np.isnan(value):
             return default
@@ -34,7 +35,7 @@ def safe_float(value, default=0.0):
 ##### Technical Analyst #####
 def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analyst_agent"):
     """
-    Sophisticated technical analysis system that combines multiple trading strategies for multiple tickers:
+    Sophisticated technical analysis system that combines multiple trading strategies:
     1. Trend Following
     2. Mean Reversion
     3. Momentum
@@ -46,13 +47,11 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     end_date = data["end_date"]
     tickers = data["tickers"]
     api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
-    # Initialize analysis for each ticker
-    technical_analysis = {}
+    technical_analysis: dict[str, dict] = {}
 
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Analyzing price data")
 
-        # Get the historical price data
         prices = get_prices(
             ticker=ticker,
             start_date=start_date,
@@ -64,7 +63,6 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
             progress.update_status(agent_id, ticker, "Failed: No price data found")
             continue
 
-        # Convert prices to a DataFrame
         prices_df = prices_to_df(prices)
 
         progress.update_status(agent_id, ticker, "Calculating trend signals")
@@ -82,7 +80,6 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
         progress.update_status(agent_id, ticker, "Statistical analysis")
         stat_arb_signals = calculate_stat_arb_signals(prices_df)
 
-        # Combine all signals using a weighted ensemble approach
         strategy_weights = {
             "trend": 0.25,
             "mean_reversion": 0.20,
@@ -103,41 +100,55 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
             strategy_weights,
         )
 
-        # Generate detailed analysis report for this ticker
-        technical_analysis[ticker] = {
-            "signal": combined_signal["signal"],
-            "confidence": round(combined_signal["confidence"] * 100),
-            "reasoning": {
-                "trend_following": {
-                    "signal": trend_signals["signal"],
-                    "confidence": round(trend_signals["confidence"] * 100),
-                    "metrics": normalize_pandas(trend_signals["metrics"]),
-                },
-                "mean_reversion": {
-                    "signal": mean_reversion_signals["signal"],
-                    "confidence": round(mean_reversion_signals["confidence"] * 100),
-                    "metrics": normalize_pandas(mean_reversion_signals["metrics"]),
-                },
-                "momentum": {
-                    "signal": momentum_signals["signal"],
-                    "confidence": round(momentum_signals["confidence"] * 100),
-                    "metrics": normalize_pandas(momentum_signals["metrics"]),
-                },
-                "volatility": {
-                    "signal": volatility_signals["signal"],
-                    "confidence": round(volatility_signals["confidence"] * 100),
-                    "metrics": normalize_pandas(volatility_signals["metrics"]),
-                },
-                "statistical_arbitrage": {
-                    "signal": stat_arb_signals["signal"],
-                    "confidence": round(stat_arb_signals["confidence"] * 100),
-                    "metrics": normalize_pandas(stat_arb_signals["metrics"]),
-                },
+        reasoning = {
+            "trend_following": {
+                "signal": trend_signals["signal"],
+                "confidence": round(trend_signals["confidence"] * 100),
+                "metrics": normalize_pandas(trend_signals["metrics"]),
             },
+            "mean_reversion": {
+                "signal": mean_reversion_signals["signal"],
+                "confidence": round(mean_reversion_signals["confidence"] * 100),
+                "metrics": normalize_pandas(mean_reversion_signals["metrics"]),
+            },
+            "momentum": {
+                "signal": momentum_signals["signal"],
+                "confidence": round(momentum_signals["confidence"] * 100),
+                "metrics": normalize_pandas(momentum_signals["metrics"]),
+            },
+            "volatility": {
+                "signal": volatility_signals["signal"],
+                "confidence": round(volatility_signals["confidence"] * 100),
+                "metrics": normalize_pandas(volatility_signals["metrics"]),
+            },
+            "statistical_arbitrage": {
+                "signal": stat_arb_signals["signal"],
+                "confidence": round(stat_arb_signals["confidence"] * 100),
+                "metrics": normalize_pandas(stat_arb_signals["metrics"]),
+            },
+            "pre_signal": combined_signal["signal"],
+            "pre_confidence": round(combined_signal["confidence"] * 100),
         }
-        progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(technical_analysis, indent=4))
 
-    # Create the technical analyst message
+        # ------------------------------------------------------------------
+        # LLM summary
+        # ------------------------------------------------------------------
+        progress.update_status(agent_id, ticker, "Generating technical analysis")
+        technical_output = generate_technical_output(
+            ticker=ticker,
+            analysis_data=reasoning,
+            state=state,
+            agent_id=agent_id,
+        )
+
+        technical_analysis[ticker] = {
+            "signal": technical_output.signal,
+            "confidence": technical_output.confidence,
+            "reasoning": technical_output.reasoning,
+        }
+
+        progress.update_status(agent_id, ticker, "Done", analysis=technical_output.reasoning)
+
     message = HumanMessage(
         content=json.dumps(technical_analysis),
         name=agent_id,
@@ -146,9 +157,7 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(technical_analysis, "Technical Analyst")
 
-    # Add the signal to the analyst_signals list
     state["data"]["analyst_signals"][agent_id] = technical_analysis
-
     progress.update_status(agent_id, None, "Done")
 
     return {
@@ -157,23 +166,81 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     }
 
 
+# ---------------------------------------------------------------------------
+# LLM Output Generator
+# ---------------------------------------------------------------------------
+
+def generate_technical_output(
+    ticker: str,
+    analysis_data: dict,
+    state: AgentState,
+    agent_id: str,
+) -> TechnicalSignal:
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are a technical analyst specializing in price action and quantitative signals.
+            You interpret five technical strategies: trend following, mean reversion, momentum,
+            volatility analysis, and statistical arbitrage.
+
+            When providing reasoning:
+            1. Lead with the dominant signal — which strategy has the strongest conviction
+            2. Note whether trend and momentum agree or disagree
+            3. Reference key metrics: ADX strength, RSI levels, z-score, Hurst exponent
+            4. Comment on volatility regime — low vol expansion or high vol contraction
+            5. Conclude with a clear technical stance
+
+            Be concise and metric-driven. Return JSON only.""",
+        ),
+        (
+            "human",
+            """Based on the following technical analysis for {ticker}, generate a signal.
+
+            Analysis:
+            {analysis_data}
+
+            Return exactly:
+            {{
+              "signal": "bullish" | "bearish" | "neutral",
+              "confidence": float (0-100),
+              "reasoning": "string"
+            }}""",
+        ),
+    ])
+
+    prompt = template.invoke({
+        "ticker": ticker,
+        "analysis_data": json.dumps(analysis_data, indent=2),
+    })
+
+    def default_signal():
+        return TechnicalSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Error in technical analysis, defaulting to neutral",
+        )
+
+    return call_llm(
+        prompt=prompt,
+        pydantic_model=TechnicalSignal,
+        agent_name=agent_id,
+        state=state,
+        default_factory=default_signal,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Technical Calculation Functions (unchanged)
+# ---------------------------------------------------------------------------
+
 def calculate_trend_signals(prices_df):
-    """
-    Advanced trend following strategy using multiple timeframes and indicators
-    """
-    # Calculate EMAs for multiple timeframes
     ema_8 = calculate_ema(prices_df, 8)
     ema_21 = calculate_ema(prices_df, 21)
     ema_55 = calculate_ema(prices_df, 55)
-
-    # Calculate ADX for trend strength
     adx = calculate_adx(prices_df, 14)
 
-    # Determine trend direction and strength
     short_trend = ema_8 > ema_21
     medium_trend = ema_21 > ema_55
-
-    # Combine signals with confidence weighting
     trend_strength = adx["adx"].iloc[-1] / 100.0
 
     if short_trend.iloc[-1] and medium_trend.iloc[-1]:
@@ -197,25 +264,16 @@ def calculate_trend_signals(prices_df):
 
 
 def calculate_mean_reversion_signals(prices_df):
-    """
-    Mean reversion strategy using statistical measures and Bollinger Bands
-    """
-    # Calculate z-score of price relative to moving average
     ma_50 = prices_df["close"].rolling(window=50).mean()
     std_50 = prices_df["close"].rolling(window=50).std()
     z_score = (prices_df["close"] - ma_50) / std_50
 
-    # Calculate Bollinger Bands
     bb_upper, bb_lower = calculate_bollinger_bands(prices_df)
-
-    # Calculate RSI with multiple timeframes
     rsi_14 = calculate_rsi(prices_df, 14)
     rsi_28 = calculate_rsi(prices_df, 28)
 
-    # Mean reversion signals
     price_vs_bb = (prices_df["close"].iloc[-1] - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1])
 
-    # Combine signals
     if z_score.iloc[-1] < -2 and price_vs_bb < 0.2:
         signal = "bullish"
         confidence = min(abs(z_score.iloc[-1]) / 4, 1.0)
@@ -239,26 +297,15 @@ def calculate_mean_reversion_signals(prices_df):
 
 
 def calculate_momentum_signals(prices_df):
-    """
-    Multi-factor momentum strategy
-    """
-    # Price momentum
     returns = prices_df["close"].pct_change()
     mom_1m = returns.rolling(21).sum()
     mom_3m = returns.rolling(63).sum()
     mom_6m = returns.rolling(126).sum()
 
-    # Volume momentum
     volume_ma = prices_df["volume"].rolling(21).mean()
     volume_momentum = prices_df["volume"] / volume_ma
 
-    # Relative strength
-    # (would compare to market/sector in real implementation)
-
-    # Calculate momentum score
     momentum_score = (0.4 * mom_1m + 0.3 * mom_3m + 0.3 * mom_6m).iloc[-1]
-
-    # Volume confirmation
     volume_confirmation = volume_momentum.iloc[-1] > 1.0
 
     if momentum_score > 0.05 and volume_confirmation:
@@ -284,35 +331,23 @@ def calculate_momentum_signals(prices_df):
 
 
 def calculate_volatility_signals(prices_df):
-    """
-    Volatility-based trading strategy
-    """
-    # Calculate various volatility metrics
     returns = prices_df["close"].pct_change()
-
-    # Historical volatility
     hist_vol = returns.rolling(21).std() * math.sqrt(252)
-
-    # Volatility regime detection
     vol_ma = hist_vol.rolling(63).mean()
     vol_regime = hist_vol / vol_ma
-
-    # Volatility mean reversion
     vol_z_score = (hist_vol - vol_ma) / hist_vol.rolling(63).std()
 
-    # ATR ratio
     atr = calculate_atr(prices_df)
     atr_ratio = atr / prices_df["close"]
 
-    # Generate signal based on volatility regime
     current_vol_regime = vol_regime.iloc[-1]
     vol_z = vol_z_score.iloc[-1]
 
     if current_vol_regime < 0.8 and vol_z < -1:
-        signal = "bullish"  # Low vol regime, potential for expansion
+        signal = "bullish"
         confidence = min(abs(vol_z) / 3, 1.0)
     elif current_vol_regime > 1.2 and vol_z > 1:
-        signal = "bearish"  # High vol regime, potential for contraction
+        signal = "bearish"
         confidence = min(abs(vol_z) / 3, 1.0)
     else:
         signal = "neutral"
@@ -331,23 +366,11 @@ def calculate_volatility_signals(prices_df):
 
 
 def calculate_stat_arb_signals(prices_df):
-    """
-    Statistical arbitrage signals based on price action analysis
-    """
-    # Calculate price distribution statistics
     returns = prices_df["close"].pct_change()
-
-    # Skewness and kurtosis
     skew = returns.rolling(63).skew()
     kurt = returns.rolling(63).kurt()
-
-    # Test for mean reversion using Hurst exponent
     hurst = calculate_hurst_exponent(prices_df["close"])
 
-    # Correlation analysis
-    # (would include correlation with related securities in real implementation)
-
-    # Generate signal based on statistical properties
     if hurst < 0.4 and skew.iloc[-1] > 1:
         signal = "bullish"
         confidence = (0.5 - hurst) * 2
@@ -370,12 +393,7 @@ def calculate_stat_arb_signals(prices_df):
 
 
 def weighted_signal_combination(signals, weights):
-    """
-    Combines multiple trading signals using a weighted approach
-    """
-    # Convert signals to numeric values
     signal_values = {"bullish": 1, "neutral": 0, "bearish": -1}
-
     weighted_sum = 0
     total_confidence = 0
 
@@ -383,17 +401,11 @@ def weighted_signal_combination(signals, weights):
         numeric_signal = signal_values[signal["signal"]]
         weight = weights[strategy]
         confidence = signal["confidence"]
-
         weighted_sum += numeric_signal * weight * confidence
         total_confidence += weight * confidence
 
-    # Normalize the weighted sum
-    if total_confidence > 0:
-        final_score = weighted_sum / total_confidence
-    else:
-        final_score = 0
+    final_score = weighted_sum / total_confidence if total_confidence > 0 else 0
 
-    # Convert back to signal
     if final_score > 0.2:
         signal = "bullish"
     elif final_score < -0.2:
@@ -405,7 +417,6 @@ def weighted_signal_combination(signals, weights):
 
 
 def normalize_pandas(obj):
-    """Convert pandas Series/DataFrames to primitive Python types"""
     if isinstance(obj, pd.Series):
         return obj.tolist()
     elif isinstance(obj, pd.DataFrame):
@@ -424,57 +435,31 @@ def calculate_rsi(prices_df: pd.DataFrame, period: int = 14) -> pd.Series:
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 
 def calculate_bollinger_bands(prices_df: pd.DataFrame, window: int = 20) -> tuple[pd.Series, pd.Series]:
     sma = prices_df["close"].rolling(window).mean()
     std_dev = prices_df["close"].rolling(window).std()
-    upper_band = sma + (std_dev * 2)
-    lower_band = sma - (std_dev * 2)
-    return upper_band, lower_band
+    return sma + (std_dev * 2), sma - (std_dev * 2)
 
 
 def calculate_ema(df: pd.DataFrame, window: int) -> pd.Series:
-    """
-    Calculate Exponential Moving Average
-
-    Args:
-        df: DataFrame with price data
-        window: EMA period
-
-    Returns:
-        pd.Series: EMA values
-    """
     return df["close"].ewm(span=window, adjust=False).mean()
 
 
 def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """
-    Calculate Average Directional Index (ADX)
-
-    Args:
-        df: DataFrame with OHLC data
-        period: Period for calculations
-
-    Returns:
-        DataFrame with ADX values
-    """
-    # Calculate True Range
     df["high_low"] = df["high"] - df["low"]
     df["high_close"] = abs(df["high"] - df["close"].shift())
     df["low_close"] = abs(df["low"] - df["close"].shift())
     df["tr"] = df[["high_low", "high_close", "low_close"]].max(axis=1)
 
-    # Calculate Directional Movement
     df["up_move"] = df["high"] - df["high"].shift()
     df["down_move"] = df["low"].shift() - df["low"]
 
     df["plus_dm"] = np.where((df["up_move"] > df["down_move"]) & (df["up_move"] > 0), df["up_move"], 0)
     df["minus_dm"] = np.where((df["down_move"] > df["up_move"]) & (df["down_move"] > 0), df["down_move"], 0)
 
-    # Calculate ADX
     df["+di"] = 100 * (df["plus_dm"].ewm(span=period).mean() / df["tr"].ewm(span=period).mean())
     df["-di"] = 100 * (df["minus_dm"].ewm(span=period).mean() / df["tr"].ewm(span=period).mean())
     df["dx"] = 100 * abs(df["+di"] - df["-di"]) / (df["+di"] + df["-di"])
@@ -484,48 +469,21 @@ def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """
-    Calculate Average True Range
-
-    Args:
-        df: DataFrame with OHLC data
-        period: Period for ATR calculation
-
-    Returns:
-        pd.Series: ATR values
-    """
     high_low = df["high"] - df["low"]
     high_close = abs(df["high"] - df["close"].shift())
     low_close = abs(df["low"] - df["close"].shift())
-
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return true_range.rolling(period).mean()
 
 
 def calculate_hurst_exponent(price_series: pd.Series, max_lag: int = 20) -> float:
-    """
-    Calculate Hurst Exponent to determine long-term memory of time series
-    H < 0.5: Mean reverting series
-    H = 0.5: Random walk
-    H > 0.5: Trending series
-
-    Args:
-        price_series: Array-like price data
-        max_lag: Maximum lag for R/S calculation
-
-    Returns:
-        float: Hurst exponent
-    """
     lags = range(2, max_lag)
-    # Add small epsilon to avoid log(0)
-    tau = [max(1e-8, np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag])))) for lag in lags]
-
-    # Return the Hurst exponent from linear fit
+    tau = [
+        max(1e-8, np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag]))))
+        for lag in lags
+    ]
     try:
         reg = np.polyfit(np.log(lags), np.log(tau), 1)
-        return reg[0]  # Hurst exponent is the slope
+        return reg[0]
     except (ValueError, RuntimeWarning):
-        # Return 0.5 (random walk) if calculation fails
         return 0.5

@@ -1,71 +1,89 @@
+"""
+src/data/cache.py
+
+Simple key-value cache aligned with how api.py uses it.
+api.py passes compound keys like "metrics_AAPL_ttm_2024-01-01_10"
+so we store and retrieve by exact key — no merging logic needed.
+
+Also includes _statement_cache for raw Twelve Data API responses
+to prevent duplicate API calls within the same server session.
+"""
+
+
 class Cache:
     """In-memory cache for API responses."""
 
     def __init__(self):
-        self._prices_cache: dict[str, list[dict[str, any]]] = {}
-        self._financial_metrics_cache: dict[str, list[dict[str, any]]] = {}
-        self._line_items_cache: dict[str, list[dict[str, any]]] = {}
-        self._insider_trades_cache: dict[str, list[dict[str, any]]] = {}
-        self._company_news_cache: dict[str, list[dict[str, any]]] = {}
+        # All caches use compound string keys passed from api.py
+        # e.g. "AAPL_2024-01-01_2024-12-31" for prices
+        # e.g. "metrics_AAPL_ttm_2024-01-01_10" for financial metrics
+        # e.g. "line_items_AAPL_ttm_2024-01-01_10_..." for line items
+        self._prices_cache: dict[str, list[dict]] = {}
+        self._financial_metrics_cache: dict[str, list[dict]] = {}
+        self._company_news_cache: dict[str, list[dict]] = {}
 
-    def _merge_data(self, existing: list[dict] | None, new_data: list[dict], key_field: str) -> list[dict]:
-        """Merge existing and new data, avoiding duplicates based on a key field."""
-        if not existing:
-            return new_data
+    # ------------------------------------------------------------------
+    # Prices
+    # ------------------------------------------------------------------
 
-        # Create a set of existing keys for O(1) lookup
-        existing_keys = {item[key_field] for item in existing}
+    def get_prices(self, key: str) -> list[dict] | None:
+        return self._prices_cache.get(key)
 
-        # Only add items that don't exist yet
-        merged = existing.copy()
-        merged.extend([item for item in new_data if item[key_field] not in existing_keys])
-        return merged
+    def set_prices(self, key: str, data: list[dict]):
+        self._prices_cache[key] = data
 
-    def get_prices(self, ticker: str) -> list[dict[str, any]] | None:
-        """Get cached price data if available."""
-        return self._prices_cache.get(ticker)
+    # ------------------------------------------------------------------
+    # Financial Metrics + Line Items
+    # Both use the same underlying dict since api.py uses
+    # get_financial_metrics / set_financial_metrics for both.
+    # ------------------------------------------------------------------
 
-    def set_prices(self, ticker: str, data: list[dict[str, any]]):
-        """Append new price data to cache."""
-        self._prices_cache[ticker] = self._merge_data(self._prices_cache.get(ticker), data, key_field="time")
+    def get_financial_metrics(self, key: str) -> list[dict] | None:
+        return self._financial_metrics_cache.get(key)
 
-    def get_financial_metrics(self, ticker: str) -> list[dict[str, any]]:
-        """Get cached financial metrics if available."""
-        return self._financial_metrics_cache.get(ticker)
+    def set_financial_metrics(self, key: str, data: list[dict]):
+        self._financial_metrics_cache[key] = data
 
-    def set_financial_metrics(self, ticker: str, data: list[dict[str, any]]):
-        """Append new financial metrics to cache."""
-        self._financial_metrics_cache[ticker] = self._merge_data(self._financial_metrics_cache.get(ticker), data, key_field="report_period")
+    # ------------------------------------------------------------------
+    # Company News
+    # ------------------------------------------------------------------
 
-    def get_line_items(self, ticker: str) -> list[dict[str, any]] | None:
-        """Get cached line items if available."""
-        return self._line_items_cache.get(ticker)
+    def get_company_news(self, key: str) -> list[dict] | None:
+        return self._company_news_cache.get(key)
 
-    def set_line_items(self, ticker: str, data: list[dict[str, any]]):
-        """Append new line items to cache."""
-        self._line_items_cache[ticker] = self._merge_data(self._line_items_cache.get(ticker), data, key_field="report_period")
+    def set_company_news(self, key: str, data: list[dict]):
+        self._company_news_cache[key] = data
 
-    def get_insider_trades(self, ticker: str) -> list[dict[str, any]] | None:
-        """Get cached insider trades if available."""
-        return self._insider_trades_cache.get(ticker)
+    # ------------------------------------------------------------------
+    # Cache stats (useful for debugging)
+    # ------------------------------------------------------------------
 
-    def set_insider_trades(self, ticker: str, data: list[dict[str, any]]):
-        """Append new insider trades to cache."""
-        self._insider_trades_cache[ticker] = self._merge_data(self._insider_trades_cache.get(ticker), data, key_field="filing_date")  # Could also use transaction_date if preferred
+    def stats(self) -> dict:
+        return {
+            "prices_entries": len(self._prices_cache),
+            "metrics_entries": len(self._financial_metrics_cache),
+            "news_entries": len(self._company_news_cache),
+        }
 
-    def get_company_news(self, ticker: str) -> list[dict[str, any]] | None:
-        """Get cached company news if available."""
-        return self._company_news_cache.get(ticker)
-
-    def set_company_news(self, ticker: str, data: list[dict[str, any]]):
-        """Append new company news to cache."""
-        self._company_news_cache[ticker] = self._merge_data(self._company_news_cache.get(ticker), data, key_field="date")
+    def clear(self):
+        """Clear all caches — useful for testing."""
+        self._prices_cache.clear()
+        self._financial_metrics_cache.clear()
+        self._company_news_cache.clear()
 
 
-# Global cache instance
+# Global cache instance — lives for the duration of the server process
 _cache = Cache()
 
 
 def get_cache() -> Cache:
     """Get the global cache instance."""
     return _cache
+
+
+# ---------------------------------------------------------------------------
+# Statement-level cache — prevents duplicate Twelve Data API calls
+# within the same request. Keyed by "income_AAPL", "balance_AAPL" etc.
+# Lives at module level so it persists across all function calls.
+# ---------------------------------------------------------------------------
+_statement_cache: dict[str, dict] = {}

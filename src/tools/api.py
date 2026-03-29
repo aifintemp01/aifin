@@ -1,11 +1,11 @@
 import datetime
 import os
-from matplotlib import ticker
 import pandas as pd
 import requests
 import time
 
 from src.data.cache import get_cache
+import src.data.cache as _cache_module
 from src.data.models import (
     CompanyNews,
     CompanyNewsResponse,
@@ -43,31 +43,47 @@ def _twelve_get(path: str, params: dict) -> dict:
         return {"error": str(e)}
 
 def _fetch_income_statement(symbol: str):
+    key = f"income_{symbol}"
+    if key in _cache_module._statement_cache:
+        return _cache_module._statement_cache[key]
     data = _twelve_get("/income_statement", params={"symbol": symbol})
     if not isinstance(data, dict) or "income_statement" not in data:
         print("TwelveData ERROR:", data)
         return None
+    _cache_module._statement_cache[key] = data
     return data
 
 def _fetch_balance_sheet(symbol: str):
+    key = f"balance_{symbol}"
+    if key in _cache_module._statement_cache:
+        return _cache_module._statement_cache[key]
     data = _twelve_get("/balance_sheet", params={"symbol": symbol})
     if not isinstance(data, dict) or "balance_sheet" not in data:
         print("TwelveData ERROR:", data)
         return None
+    _cache_module._statement_cache[key] = data
     return data
 
 def _fetch_cash_flow(symbol: str):
+    key = f"cashflow_{symbol}"
+    if key in _cache_module._statement_cache:
+        return _cache_module._statement_cache[key]
     data = _twelve_get("/cash_flow", params={"symbol": symbol})
     if not isinstance(data, dict) or "cash_flow" not in data:
         print("TwelveData ERROR:", data)
         return None
+    _cache_module._statement_cache[key] = data
     return data
 
 def _fetch_statistics(symbol: str):
+    key = f"statistics_{symbol}"
+    if key in _cache_module._statement_cache:
+        return _cache_module._statement_cache[key]
     data = _twelve_get("/statistics", params={"symbol": symbol})
     if not isinstance(data, dict) or "statistics" not in data:
         print("TwelveData ERROR:", data)
         return None
+    _cache_module._statement_cache[key] = data
     return data
 
 def _fetch_prices(symbol: str, start_date=None, end_date=None, interval="1day", outputsize=5000):
@@ -655,7 +671,7 @@ def get_company_news(
             "language": "en",
             "size": min(limit, 10),  # free tier limit
         },
-        timeout=15,
+        timeout=30,
     )
     
     if not resp.ok:

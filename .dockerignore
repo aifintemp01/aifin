@@ -1,17 +1,3 @@
-# Git
-.git
-.gitignore
-
-# Poetry
-.venv
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-
-# Environment
-.env
-
 # IDEs and editors
 .idea/
 .vscode/
@@ -23,6 +9,48 @@ logs/
 data/
 *.log
 
-# OS specific
+# Secrets — injected via Railway dashboard
+.env
+
+# Git
+.git
+.github
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+
+# Frontend — deployed separately on Vercel
+app/frontend/node_modules
+app/frontend/.github
+
+# Database — Railway uses persistent volume, not SQLite file
+app/backend/hedge_fund.db
+*.db
+
+# ChromaDB — mounted via Railway Volume at runtime
+pageocr/chroma_db
+pageocr/uploads
+
+# Dev/test files
+tests/
+test_*.py
+*.test.py
+
+# Virtual environments
+.venv
+venv
+
+# Docs
+README.md
+app/README.md
+docker/README.md
+
+# OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
