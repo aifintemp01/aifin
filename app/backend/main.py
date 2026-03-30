@@ -28,7 +28,8 @@ Base.metadata.create_all(bind=engine)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "https://aifin-production.up.railway.app", "https://aifin-frontend-5cx1k63dp-aifins-projects.vercel.app", "https://aifin-frontend.vercel.app"],  # Frontend URLs
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "https://aifin-production.up.railway.app", "https://aifin-frontend.vercel.app"],
+    allow_origin_regex=r"https://aifin-frontend.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
