@@ -23,10 +23,11 @@ export function PortfolioManagerNode({
   isConnectable,
 }: NodeProps<PortfolioManagerNode>) {
   const { currentFlowId } = useFlowContext();
+  const flowId = currentFlowId?.toString() || null;
+
   const { getAgentNodeDataForFlow, setAgentModel, getAgentModel, getOutputNodeDataForFlow } = useNodeContext();
 
-  // Get agent node data for the current flow
-  const agentNodeData = getAgentNodeDataForFlow(currentFlowId?.toString() || null);
+  const agentNodeData = getAgentNodeDataForFlow(flowId);
   const nodeData = agentNodeData[id] || {
     status: 'IDLE',
     ticker: null,
@@ -38,58 +39,49 @@ export function PortfolioManagerNode({
   const isInProgress = status === 'IN_PROGRESS';
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  // Use persistent state hooks
   const [availableModels, setAvailableModels] = useNodeState<LanguageModel[]>(
-    id,
-    'availableModels',
-    []
+    id, 'availableModels', []
   );
   const [selectedModel, setSelectedModel] = useNodeState<LanguageModel | null>(
-    id,
-    'selectedModel',
-    null
+    id, 'selectedModel', null
   );
 
-  // Load models on mount
   useEffect(() => {
     const loadModels = async () => {
       try {
         const [models, defaultModel] = await Promise.all([
           getModels(),
-          getDefaultModel()
+          getDefaultModel(),
         ]);
         setAvailableModels(models);
-        
-        // Set default model if no model is currently selected
         if (!selectedModel && defaultModel) {
           setSelectedModel(defaultModel);
         }
       } catch (error) {
         console.error('Failed to load models:', error);
-        // Keep empty array as fallback
       }
     };
-
     loadModels();
   }, [setAvailableModels, selectedModel, setSelectedModel]);
 
-  // Update the node context when the model changes
   useEffect(() => {
-    const flowId = currentFlowId?.toString() || null;
     const currentContextModel = getAgentModel(flowId, id);
     if (selectedModel !== currentContextModel) {
       setAgentModel(flowId, id, selectedModel);
     }
-  }, [selectedModel, id, currentFlowId, setAgentModel, getAgentModel]);
+  }, [selectedModel, id, flowId, setAgentModel, getAgentModel]);
 
   const handleModelChange = (model: LanguageModel | null) => {
     setSelectedModel(model);
   };
-  
-  const outputNodeData = getOutputNodeDataForFlow(currentFlowId?.toString() || null);
 
-  // Get connected agent IDs
-  const { connectedAgentIds } = useOutputNodeConnection(id);
+  // Key fix: look up output data using this PM's own node ID as the key.
+  // Data is stored at flowId:pmId — without passing id here, multiple PMs
+  // would all try to read from the same flowId key and return null.
+  const outputNodeData = getOutputNodeDataForFlow(flowId, id);
+
+  // Pass flowId so the hook correctly resolves connected agents for this flow.
+  const { connectedAgentIds } = useOutputNodeConnection(id, flowId);
 
   return (
     <>
@@ -111,7 +103,6 @@ export function PortfolioManagerNode({
                 <div className="text-subtitle text-primary flex items-center gap-1">
                   Status
                 </div>
-
                 <div
                   className={cn(
                     'text-foreground text-xs rounded p-2 border border-status',
@@ -123,12 +114,9 @@ export function PortfolioManagerNode({
                   </span>
                 </div>
               </div>
-              <div className='flex flex-col gap-2'>
+              <div className="flex flex-col gap-2">
                 {outputNodeData && (
-                  <Button
-                    size="sm"
-                    onClick={() => setIsDialogOpen(true)}
-                  >
+                  <Button size="sm" onClick={() => setIsDialogOpen(true)}>
                     View Investment Report
                   </Button>
                 )}

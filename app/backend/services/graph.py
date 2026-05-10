@@ -13,128 +13,158 @@ from src.graph.state import AgentState
 
 
 def extract_base_agent_key(unique_id: str) -> str:
-    """
-    Extract the base agent key from a unique node ID.
-    
-    Args:
-        unique_id: The unique node ID with suffix (e.g., "warren_buffett_abc123")
-    
-    Returns:
-        The base agent key (e.g., "warren_buffett")
-    """
-    # For agent nodes, remove the last underscore and 6-character suffix
     parts = unique_id.split('_')
     if len(parts) >= 2:
         last_part = parts[-1]
-        # If the last part is a 6-character alphanumeric string, it's likely our suffix
         if len(last_part) == 6 and re.match(r'^[a-z0-9]+$', last_part):
             return '_'.join(parts[:-1])
-    return unique_id  # Return original if no suffix pattern found
+    return unique_id
 
 
-# Helper function to create the agent graph
+def _make_signal_filter(agent_func, agent_id: str, allowed_ids: set):
+    """
+    Wrap an agent function so it only sees analyst_signals from allowed_ids.
+    Ensures each PM (and its paired risk manager) operates on isolated signals
+    when multiple PMs exist in the same flow.
+    """
+    def _filtered(state: AgentState):
+        filtered_signals = {
+            k: v for k, v in state["data"]["analyst_signals"].items()
+            if k in allowed_ids
+        }
+        patched = {
+            **state,
+            "data": {**state["data"], "analyst_signals": filtered_signals},
+        }
+        return agent_func(patched, agent_id=agent_id)
+    return _filtered
+
+
 def create_graph(graph_nodes: list, graph_edges: list) -> StateGraph:
     """Create the workflow based on the React Flow graph structure."""
     graph = StateGraph(AgentState)
     graph.add_node("start_node", start)
 
-    # Get analyst nodes from the configuration
-    analyst_nodes = {key: (f"{key}_agent", config["agent_func"]) for key, config in ANALYST_CONFIG.items()}
-    
-    # Extract agent IDs from graph structure
+    analyst_nodes = {
+        key: (f"{key}_agent", config["agent_func"])
+        for key, config in ANALYST_CONFIG.items()
+    }
+
     agent_ids = [node.id for node in graph_nodes]
     agent_ids_set = set(agent_ids)
-    
-    # Track which nodes are portfolio managers for special handling
+
     portfolio_manager_nodes = set()
-    
-    # Add agent nodes
+
+    # ── Add analyst nodes ────────────────────────────────────────────────────
     for unique_agent_id in agent_ids:
         base_agent_key = extract_base_agent_key(unique_agent_id)
-        
-        # Track portfolio manager nodes for special handling (before ANALYST_CONFIG check)
+
         if base_agent_key == "portfolio_manager":
             portfolio_manager_nodes.add(unique_agent_id)
             continue
-            
-        # Skip if the base agent key is not in our analyst configuration
+
         if base_agent_key not in ANALYST_CONFIG:
             continue
-            
+
         node_name, node_func = analyst_nodes[base_agent_key]
         agent_function = create_agent_function(node_func, unique_agent_id)
         graph.add_node(unique_agent_id, agent_function)
-    
-    # Add portfolio manager nodes and their corresponding risk managers
-    risk_manager_nodes = {}  # Map portfolio manager ID to risk manager ID
-    for portfolio_manager_id in portfolio_manager_nodes:
-        portfolio_manager_function = create_agent_function(portfolio_management_agent, portfolio_manager_id)
-        graph.add_node(portfolio_manager_id, portfolio_manager_function)
-        
-        # Create unique risk manager for this portfolio manager
-        suffix = portfolio_manager_id.split('_')[-1]
-        risk_manager_id = f"risk_management_agent_{suffix}"
-        risk_manager_nodes[portfolio_manager_id] = risk_manager_id
-        
-        # Add the risk manager node
-        risk_manager_function = create_agent_function(risk_management_agent, risk_manager_id)
-        graph.add_node(risk_manager_id, risk_manager_function)
 
-    # Build connections based on React Flow graph structure
+    # ── Build edge maps ──────────────────────────────────────────────────────
     nodes_with_incoming_edges = set()
     nodes_with_outgoing_edges = set()
-    direct_to_portfolio_managers = {}  # Map analyst ID to portfolio manager ID for direct connections
-    
+    direct_to_portfolio_managers: dict[str, str] = {}   # analyst_id → pm_id
+
     for edge in graph_edges:
-        # Only consider edges between agent nodes (not from stock tickers)
         if edge.source in agent_ids_set and edge.target in agent_ids_set:
-            source_base_key = extract_base_agent_key(edge.source)
-            target_base_key = extract_base_agent_key(edge.target)
-            
+            source_base = extract_base_agent_key(edge.source)
+            target_base = extract_base_agent_key(edge.target)
+
             nodes_with_incoming_edges.add(edge.target)
             nodes_with_outgoing_edges.add(edge.source)
-            
-            # Check if this is a direct connection from analyst to portfolio manager
-            if (source_base_key in ANALYST_CONFIG and 
-                source_base_key != "portfolio_manager" and 
-                target_base_key == "portfolio_manager"):
-                # Don't add direct edge to portfolio manager - we'll route through risk manager
+
+            if (
+                source_base in ANALYST_CONFIG
+                and source_base != "portfolio_manager"
+                and target_base == "portfolio_manager"
+            ):
                 direct_to_portfolio_managers[edge.source] = edge.target
             else:
-                # Add edge between agent nodes (but not direct to portfolio managers)
                 graph.add_edge(edge.source, edge.target)
-    
-    # Connect start_node to nodes that don't have incoming edges from other agents
+
+    # ── Build reverse map: PM → analysts that feed it ────────────────────────
+    pm_to_analysts: dict[str, set] = {pm_id: set() for pm_id in portfolio_manager_nodes}
+    for analyst_id, pm_id in direct_to_portfolio_managers.items():
+        pm_to_analysts[pm_id].add(analyst_id)
+
+    multi_pm = len(portfolio_manager_nodes) > 1
+
+    # ── Add PM nodes and their paired risk managers ──────────────────────────
+    risk_manager_nodes: dict[str, str] = {}   # pm_id → risk_manager_id
+
+    for pm_id in portfolio_manager_nodes:
+        analysts_for_pm = pm_to_analysts.get(pm_id, set())
+
+        suffix = pm_id.split('_')[-1]
+        risk_manager_id = f"risk_management_agent_{suffix}"
+        risk_manager_nodes[pm_id] = risk_manager_id
+
+        # Risk manager sees only this PM's analysts
+        if multi_pm:
+            rm_func = _make_signal_filter(
+                risk_management_agent,
+                risk_manager_id,
+                analysts_for_pm,
+            )
+        else:
+            rm_func = create_agent_function(risk_management_agent, risk_manager_id)
+        graph.add_node(risk_manager_id, rm_func)
+
+        # PM sees its analysts + its own risk manager's output
+        if multi_pm:
+            pm_allowed = analysts_for_pm | {risk_manager_id}
+            pm_func = _make_signal_filter(
+                portfolio_management_agent,
+                pm_id,
+                pm_allowed,
+            )
+        else:
+            pm_func = create_agent_function(portfolio_management_agent, pm_id)
+        graph.add_node(pm_id, pm_func)
+
+    # ── Connect start_node to entry analysts ─────────────────────────────────
     for agent_id in agent_ids:
         if agent_id not in nodes_with_incoming_edges:
-            base_agent_key = extract_base_agent_key(agent_id)
-            if base_agent_key in ANALYST_CONFIG and base_agent_key != "portfolio_manager":
+            base = extract_base_agent_key(agent_id)
+            if base in ANALYST_CONFIG and base != "portfolio_manager":
                 graph.add_edge("start_node", agent_id)
-    
-    # Connect analysts that have direct connections to portfolio managers to their corresponding risk managers
-    for analyst_id, portfolio_manager_id in direct_to_portfolio_managers.items():
-        risk_manager_id = risk_manager_nodes[portfolio_manager_id]
-        graph.add_edge(analyst_id, risk_manager_id)
-    
-    # Connect each risk manager to its corresponding portfolio manager
-    for portfolio_manager_id, risk_manager_id in risk_manager_nodes.items():
-        graph.add_edge(risk_manager_id, portfolio_manager_id)
-    
-    # Connect portfolio managers to END
-    for portfolio_manager_id in portfolio_manager_nodes:
-        graph.add_edge(portfolio_manager_id, END)
 
-    # Set the entry point to the start node
+    # ── Route analysts → risk managers → PMs → END ──────────────────────────
+    for analyst_id, pm_id in direct_to_portfolio_managers.items():
+        graph.add_edge(analyst_id, risk_manager_nodes[pm_id])
+
+    for pm_id, risk_manager_id in risk_manager_nodes.items():
+        graph.add_edge(risk_manager_id, pm_id)
+
+    for pm_id in portfolio_manager_nodes:
+        graph.add_edge(pm_id, END)
+
     graph.set_entry_point("start_node")
     return graph
 
 
-async def run_graph_async(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request=None):
-    """Async wrapper for run_graph to work with asyncio."""
-    # Use run_in_executor to run the synchronous function in a separate thread
-    # so it doesn't block the event loop
+async def run_graph_async(
+    graph, portfolio, tickers, start_date, end_date,
+    model_name, model_provider, request=None
+):
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: run_graph(graph, portfolio, tickers, start_date, end_date, model_name, model_provider, request))  # Use default executor
+    result = await loop.run_in_executor(
+        None,
+        lambda: run_graph(
+            graph, portfolio, tickers, start_date, end_date,
+            model_name, model_provider, request
+        )
+    )
     return result
 
 
@@ -148,17 +178,10 @@ def run_graph(
     model_provider: str,
     request=None,
 ) -> dict:
-    """
-    Run the graph with the given portfolio, tickers,
-    start date, end date, show reasoning, model name,
-    and model provider.
-    """
     return graph.invoke(
         {
             "messages": [
-                HumanMessage(
-                    content="Make trading decisions based on the provided data.",
-                )
+                HumanMessage(content="Make trading decisions based on the provided data.")
             ],
             "data": {
                 "tickers": tickers,
@@ -171,14 +194,13 @@ def run_graph(
                 "show_reasoning": False,
                 "model_name": model_name,
                 "model_provider": model_provider,
-                "request": request,  # Pass the request for agent-specific model access
+                "request": request,
             },
-        },
+        }
     )
 
 
 def parse_hedge_fund_response(response):
-    """Parses a JSON string and returns a dictionary."""
     try:
         return json.loads(response)
     except json.JSONDecodeError as e:

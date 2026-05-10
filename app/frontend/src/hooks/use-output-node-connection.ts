@@ -13,26 +13,32 @@ export function useOutputNodeConnection(nodeId: string, flowId: string | null = 
   return useMemo(() => {
     const nodes = getNodes();
     const edges = getEdges();
-    
+
     const connectedEdges = getConnectedEdges([{ id: nodeId }] as any, edges);
+
+    // Include both analyst nodes AND portfolio-manager nodes as valid sources.
+    // PM nodes have type 'portfolio-manager-node', not 'agent-node', so we
+    // must allow both to correctly resolve connectedPmId.
     const connectedAgentIds = connectedEdges
       .filter(edge => edge.target === nodeId)
       .map(edge => edge.source)
       .filter(sourceId => {
         const sourceNode = nodes.find(n => n.id === sourceId);
-        return sourceNode?.type === 'agent-node';
+        return (
+          sourceNode?.type === 'agent-node' ||
+          sourceNode?.type === 'portfolio-manager-node'
+        );
       });
 
     const connectedPmId = (() => {
-      // Step 1: direct PM connection
+      // Step 1: direct PM connection (e.g. PM → InvestmentReportNode)
       const directPm = connectedAgentIds.find(
         agentId => extractBaseAgentKey(agentId) === 'portfolio_manager'
       );
       if (directPm) return directPm;
 
       // Step 2: find PM that our connected analysts feed INTO
-      // Edges go: analyst → PM, so look for edges where source is one of our analysts
-      // and target is a PM node
+      // (e.g. Analyst → PM, and InvestmentReportNode also has edge from Analyst)
       const connectedSet = new Set(connectedAgentIds);
       for (const edge of edges) {
         if (!connectedSet.has(edge.source)) continue;
@@ -47,31 +53,33 @@ export function useOutputNodeConnection(nodeId: string, flowId: string | null = 
       return null;
     })();
 
-     const outputNodeData = (!flowId || !connectedPmId) 
-      ? (() => {
-          console.log('[Hook] Missing info:', { flowId, connectedPmId });
-          return null;
-        })()
-      : (() => {
-          const data = getOutputNodeDataForFlow(flowId, connectedPmId);
-          console.log(`[Hook] Key: ${flowId}:${connectedPmId}, Found:`, !!data);
-          return data;
-        })();
+    const outputNodeData =
+      !flowId || !connectedPmId
+        ? (() => {
+            console.log('[Hook] Missing info:', { flowId, connectedPmId });
+            return null;
+          })()
+        : (() => {
+            const data = getOutputNodeDataForFlow(flowId, connectedPmId);
+            console.log(`[Hook] Key: ${flowId}:${connectedPmId}, Found:`, !!data);
+            return data;
+          })();
 
-    console.log('useOutputNodeConnection:', { 
-      nodeId, 
-      flowId, 
-      connectedAgentIds, 
-      connectedPmId 
+    console.log('useOutputNodeConnection:', {
+      nodeId,
+      flowId,
+      connectedAgentIds,
+      connectedPmId,
     });
     console.log('outputNodeData:', outputNodeData);
 
-    const isAnyAgentRunning = connectedAgentIds.some(agentId => 
-      agentNodeData[agentId]?.status === 'IN_PROGRESS'
+    const isAnyAgentRunning = connectedAgentIds.some(
+      agentId => agentNodeData[agentId]?.status === 'IN_PROGRESS'
     );
 
     const isProcessing = isAnyAgentRunning;
-    const isOutputAvailable = outputNodeData !== null && outputNodeData !== undefined;
+    const isOutputAvailable =
+      outputNodeData !== null && outputNodeData !== undefined;
     const isConnected = connectedAgentIds.length > 0;
 
     return {
