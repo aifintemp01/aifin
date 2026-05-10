@@ -55,29 +55,19 @@ export function Flow({ className = '' }: FlowProps) {
   const { takeSnapshot, undo, redo, canUndo, canRedo, clearHistory } = useFlowHistory({ flowId: currentFlowId });
 
   // Create debounced auto-save function
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedFlowIdRef = useRef<number | null>(null);
   
   const autoSave = useCallback(async (flowIdToSave?: number | null) => {
-    // Use the provided flowId or fall back to current flow ID
     const targetFlowId = flowIdToSave !== undefined ? flowIdToSave : currentFlowId;
     
-    // Clear any existing timeout
     if (autoSaveTimeoutRef.current) {
       clearTimeout(autoSaveTimeoutRef.current);
     }
     
-    // Set new timeout for debounced save
     autoSaveTimeoutRef.current = setTimeout(async () => {
-      // Double-check that we're still saving to the correct flow
-      if (!targetFlowId) {
-        return;
-      }
-      
-      // If the current flow has changed since this auto-save was scheduled, skip it
-      if (targetFlowId !== currentFlowId) {
-        return;
-      }
+      if (!targetFlowId) return;
+      if (targetFlowId !== currentFlowId) return;
       
       try {
         await saveCurrentFlowWithCompleteState();
@@ -85,73 +75,68 @@ export function Flow({ className = '' }: FlowProps) {
       } catch (error) {
         console.error(`[Auto-save] Failed to save flow ${targetFlowId}:`, error);
       }
-    }, 1000); // 1 second debounce
+    }, 1000);
   }, [currentFlowId, saveCurrentFlowWithCompleteState]);
 
-  // Enhanced onNodesChange handler with auto-save for specific change types
   const handleNodesChange = useCallback((changes: NodeChange<AppNode>[]) => {
-    // Apply the changes first
     onNodesChange(changes);
     
-    // Check if any of the changes should trigger auto-save
     const shouldAutoSave = changes.some(change => {
       switch (change.type) {
-        case 'add':
-          return true;
-        case 'remove':
-          return true;
+        case 'add':    return true;
+        case 'remove': return true;
         case 'position':
-          // Only auto-save position changes when dragging is complete
-          if (!change.dragging) {
-            return true;
-          }
-          return false;
+          return !change.dragging;
         default:
           return false;
       }
     });
 
-    // Trigger auto-save if needed and flow is initialized
-    // IMPORTANT: Capture the current flow ID at the time of the change
     if (shouldAutoSave && isInitialized && currentFlowId) {
       const flowIdAtTimeOfChange = currentFlowId;
       autoSave(flowIdAtTimeOfChange);
     }
   }, [onNodesChange, autoSave, isInitialized, currentFlowId]);
 
-  // Enhanced onEdgesChange handler with auto-save for edge removal
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
-    // Apply the changes first
     onEdgesChange(changes);
     
-    // Check if any of the changes should trigger auto-save
-    const shouldAutoSave = changes.some(change => {
-      switch (change.type) {
-        case 'remove':
-          return true;
-        default:
-          return false;
-      }
-    });
+    const shouldAutoSave = changes.some(change => change.type === 'remove');
 
-    // Trigger auto-save if needed and flow is initialized
-    // IMPORTANT: Capture the current flow ID at the time of the change
     if (shouldAutoSave && isInitialized && currentFlowId) {
       const flowIdAtTimeOfChange = currentFlowId;
       autoSave(flowIdAtTimeOfChange);
     }
   }, [onEdgesChange, autoSave, isInitialized, currentFlowId]);
 
+  // Delete an edge when clicked
+  const handleEdgeClick = useCallback(
+    (_: React.MouseEvent, edge: Edge) => {
+      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+      if (currentFlowId) {
+        const flowIdAtTimeOfChange = currentFlowId;
+        if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+        setTimeout(async () => {
+          if (flowIdAtTimeOfChange !== currentFlowId) return;
+          try {
+            await saveCurrentFlowWithCompleteState();
+          } catch (err) {
+            console.error('[Auto-save] Failed to save after edge deletion:', err);
+          }
+        }, 100);
+      }
+    },
+    [setEdges, currentFlowId, saveCurrentFlowWithCompleteState]
+  );
+
   // Cleanup timeout on unmount
   useEffect(() => {
     return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
+      if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
     };
   }, []);
 
-  // Cancel pending auto-saves when flow changes to prevent cross-flow saves
+  // Cancel pending auto-saves when flow changes
   useEffect(() => {
     if (autoSaveTimeoutRef.current) {
       clearTimeout(autoSaveTimeoutRef.current);
@@ -159,42 +144,18 @@ export function Flow({ className = '' }: FlowProps) {
     }
   }, [currentFlowId]);
 
-  // Take initial snapshot when flow is initialized
   useEffect(() => {
     if (isInitialized && nodes.length === 0 && edges.length === 0) {
       takeSnapshot();
     }
   }, [isInitialized, takeSnapshot, nodes.length, edges.length]);
 
-  // Take snapshot when nodes or edges change (debounced)
   useEffect(() => {
     if (!isInitialized) return;
-    
-    const timeoutId = setTimeout(() => {
-      takeSnapshot();
-    }, 500); // Debounce snapshots by 500ms
-
+    const timeoutId = setTimeout(() => { takeSnapshot(); }, 500);
     return () => clearTimeout(timeoutId);
   }, [nodes, edges, takeSnapshot, isInitialized]);
 
-  // // Auto-save when nodes or edges change (debounced with longer delay)
-  // useEffect(() => {
-  //   if (!isInitialized) return;
-    
-  //   const timeoutId = setTimeout(async () => {
-  //     try {
-  //       await saveCurrentFlowWithCompleteState();
-  //       // Don't show success toast for auto-save to avoid spam
-  //     } catch (err) {
-  //       // Only show error notifications for auto-save failures
-  //       error('Auto-save failed', 'auto-save-error');
-  //     }
-  //   }, 1000); // Debounce auto-save by 1 second (longer than undo/redo)
-
-  //   return () => clearTimeout(timeoutId);
-  // }, [nodes, edges, saveCurrentFlowWithCompleteState, error, isInitialized]);
-
-  // Connect keyboard shortcuts to save flow with toast
   useFlowKeyboardShortcuts(async () => {
     try {
       const savedFlow = await saveCurrentFlowWithCompleteState();
@@ -208,7 +169,6 @@ export function Flow({ className = '' }: FlowProps) {
     }
   });
 
-  // Add undo/redo keyboard shortcuts
   useKeyboardShortcuts({
     shortcuts: [
       {
@@ -229,43 +189,24 @@ export function Flow({ className = '' }: FlowProps) {
     ],
   });
   
-  // Initialize the flow when it first renders
   const onInit = useCallback(() => {
-    if (!isInitialized) {
-      setIsInitialized(true);
-    }
+    if (!isInitialized) setIsInitialized(true);
   }, [isInitialized]);
 
-  // Connect two nodes with marker
   const onConnect = useCallback(
     (connection: Connection) => {
-      // Create a new edge with a marker and unique ID
       const newEdge: Edge = {
         ...connection,
-        id: `edge-${Date.now()}`, // Add unique ID
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-        },
+        id: `edge-${Date.now()}`,
+        markerEnd: { type: MarkerType.ArrowClosed },
       };
       setEdges((eds) => addEdge(newEdge, eds));
       
-      // Auto-save new connections immediately (structural change)
       if (currentFlowId) {
-        // IMPORTANT: Capture the current flow ID at the time of the change
         const flowIdAtTimeOfChange = currentFlowId;
-        
-        // Clear any pending debounced saves and save immediately
-        if (autoSaveTimeoutRef.current) {
-          clearTimeout(autoSaveTimeoutRef.current);
-        }
-        
-        // Use setTimeout to ensure the edge is added to state first
+        if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
         setTimeout(async () => {
-          // Double-check that we're still saving to the correct flow
-          if (flowIdAtTimeOfChange !== currentFlowId) {
-            return;
-          }
-          
+          if (flowIdAtTimeOfChange !== currentFlowId) return;
           try {
             await saveCurrentFlowWithCompleteState();
           } catch (error) {
@@ -277,12 +218,10 @@ export function Flow({ className = '' }: FlowProps) {
     [setEdges, currentFlowId, saveCurrentFlowWithCompleteState]
   );
 
-  // Theme-aware background colors
-  const backgroundStyle = {
-    backgroundColor: 'hsl(var(--background))'
-  };
-  
-  const gridColor = resolvedTheme === 'light' ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))';
+  const backgroundStyle = { backgroundColor: 'hsl(var(--background))' };
+  const gridColor = resolvedTheme === 'light'
+    ? 'hsl(var(--foreground))'
+    : 'hsl(var(--muted-foreground))';
 
   return (
     <div className={`w-full h-full ${className}`}>
@@ -295,9 +234,11 @@ export function Flow({ className = '' }: FlowProps) {
           edgeTypes={edgeTypes}
           onEdgesChange={handleEdgesChange}
           onConnect={onConnect}
+          onEdgeClick={handleEdgeClick}
           onInit={onInit}
           colorMode={colorMode}
           proOptions={proOptions}
+          deleteKeyCode={['Delete', 'Backspace']}
         >
           <Background 
             variant={BackgroundVariant.Dots}
@@ -305,9 +246,8 @@ export function Flow({ className = '' }: FlowProps) {
             color={gridColor}
             style={backgroundStyle}
           />
-          {/* <CustomControls onReset={resetFlow} /> */}
         </ReactFlow>
       </TooltipProvider>
     </div>
   );
-} 
+}

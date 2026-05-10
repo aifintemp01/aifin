@@ -43,6 +43,27 @@ export function TreeQueryPage() {
     }
   }
 
+  async function loadHistory(filename: string) {
+    try {
+      const res = await PageIndexAPI.getHistory(filename);
+      const restored: Message[] = (res.messages || []).map((m: any) => ({
+        id: crypto.randomUUID(),
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        timestamp: new Date(m.timestamp),
+      }));
+      setMessages(restored);
+    } catch {
+      setMessages([]);
+    }
+  }
+
+  async function handleSelectDoc(filename: string) {
+    setSelectedDoc(filename);
+    setError(null);
+    await loadHistory(filename);
+  }
+
   async function handleFileUpload(file: File) {
     if (!file.name.endsWith('.pdf')) {
       setError('Only PDF files are supported.');
@@ -57,7 +78,7 @@ export function TreeQueryPage() {
       setUploadProgress(`Done — ${result.node_count} nodes indexed`);
       await loadDocuments();
       setSelectedDoc(result.filename);
-      setMessages([]);
+      setMessages([]); // fresh doc — no history yet
       setTimeout(() => setUploadProgress(null), 3000);
     } catch (e: any) {
       setError(e.message || 'Upload failed');
@@ -89,6 +110,7 @@ export function TreeQueryPage() {
         content: result.answer,
         timestamp: new Date(),
       }]);
+      // History is saved server-side automatically on every query
     } catch (e: any) {
       setError(e.message || 'Query failed');
     } finally {
@@ -169,7 +191,7 @@ export function TreeQueryPage() {
           {documents.map(doc => (
             <button
               key={doc.filename}
-              onClick={() => { setSelectedDoc(doc.filename); setMessages([]); setError(null); }}
+              onClick={() => handleSelectDoc(doc.filename)}
               className={cn(
                 "w-full text-left px-3 py-2 rounded-md flex items-start gap-2 transition-colors",
                 selectedDoc === doc.filename
@@ -221,7 +243,6 @@ export function TreeQueryPage() {
         {/* Messages area */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
 
-          {/* Empty state — no doc selected */}
           {!selectedDoc && (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
@@ -233,7 +254,6 @@ export function TreeQueryPage() {
             </div>
           )}
 
-          {/* Empty state — doc selected but no messages */}
           {selectedDoc && messages.length === 0 && !isQuerying && (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <p className="text-sm text-muted-foreground">
@@ -258,7 +278,6 @@ export function TreeQueryPage() {
             </div>
           )}
 
-          {/* Messages */}
           {messages.map(msg => (
             <div
               key={msg.id}
@@ -283,7 +302,6 @@ export function TreeQueryPage() {
             </div>
           ))}
 
-          {/* Thinking indicator */}
           {isQuerying && (
             <div className="flex gap-2.5 justify-start">
               <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -299,7 +317,6 @@ export function TreeQueryPage() {
             </div>
           )}
 
-          {/* Error */}
           {error && (
             <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2.5">
               <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />

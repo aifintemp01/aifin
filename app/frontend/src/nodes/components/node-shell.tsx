@@ -1,6 +1,7 @@
 import { Card, CardHeader } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useReactFlow } from '@xyflow/react';
+import { X } from 'lucide-react';
 import { ReactNode } from 'react';
 
 export interface NodeShellProps {
@@ -33,10 +34,17 @@ export function NodeShell({
   width = 'w-64',
 }: NodeShellProps) {
   const isInProgress = status === 'IN_PROGRESS';
+  const { deleteElements } = useReactFlow();
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    deleteElements({ nodes: [{ id }] });
+  };
+
   return (
     <div
       className={cn(
-        "react-flow__node-default relative select-none cursor-pointer p-0 rounded-lg border border-node transition-all duration-200",
+        "react-flow__node-default relative select-none cursor-pointer p-0 rounded-lg border border-node transition-all duration-200 group",
         width,
         !selected && "hover:border-node-hover hover:shadow-lg",
         selected && "border-node-selected shadow-xl",
@@ -48,6 +56,23 @@ export function NodeShell({
       {isInProgress && (
         <div className="animated-border-container"></div>
       )}
+
+      {/* Delete button — visible on hover or when selected */}
+      <button
+        onClick={handleDelete}
+        className={cn(
+          "absolute -top-2 -right-2 z-20 h-5 w-5 rounded-full bg-background border border-border",
+          "flex items-center justify-center",
+          "text-muted-foreground hover:text-destructive hover:border-destructive",
+          "transition-all duration-150 shadow-sm",
+          "opacity-0 group-hover:opacity-100",
+          selected && "opacity-100"
+        )}
+        title="Delete node"
+      >
+        <X className="h-3 w-3" />
+      </button>
+
       {hasLeftHandle && (
         <Handle
           type="target"
@@ -87,4 +112,4 @@ export function NodeShell({
       )}
     </div>
   );
-} 
+}

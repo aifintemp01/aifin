@@ -29,6 +29,17 @@ export interface DocumentListItem {
   status: string;
 }
 
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+export interface HistoryResult {
+  filename: string;
+  messages: HistoryMessage[];
+}
+
 export const PageIndexAPI = {
   async uploadPDF(file: File): Promise<UploadResult> {
     const formData = new FormData();
@@ -68,6 +79,12 @@ export const PageIndexAPI = {
   async listDocuments(): Promise<{ documents: DocumentListItem[] }> {
     const res = await fetch(`${API_BASE}/pageindex/documents`);
     if (!res.ok) throw new Error('Failed to list documents');
+    return res.json();
+  },
+
+  async getHistory(filename: string): Promise<HistoryResult> {
+    const res = await fetch(`${API_BASE}/pageindex/history/${encodeURIComponent(filename)}`);
+    if (!res.ok) throw new Error('Failed to load history');
     return res.json();
   },
 };

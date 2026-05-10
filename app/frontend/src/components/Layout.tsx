@@ -15,6 +15,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { ReactNode, useEffect, useState } from 'react';
 import { TopBar, AppMode } from './layout/top-bar';
 import { TreeQueryPage } from '@/pages/tree-query-page';
+import { PDFQueueStatus } from './pdf-queue-status';
 
 function LayoutContent({ children }: { children: ReactNode }) {
   const { reactFlowInstance } = useFlowContext();
@@ -79,6 +80,8 @@ function LayoutContent({ children }: { children: ReactNode }) {
         activeMode={activeMode}
         onModeChange={setActiveMode}
       />
+
+      <PDFQueueStatus />
 
       {isTreeQuery ? (
         /* Tree Query — full area below top bar */

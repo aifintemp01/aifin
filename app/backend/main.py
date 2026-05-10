@@ -19,16 +19,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Hedge Fund API", description="Backend API for AI Hedge Fund", version="0.1.0")
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
-# Initialize database tables (this is safe to run multiple times)
+
+# Initialize database tables (safe to run multiple times)
 Base.metadata.create_all(bind=engine)
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "https://aifin-production.up.railway.app", "https://aifin-frontend.vercel.app"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "https://aifin-production.up.railway.app",
+        "https://aifin-frontend.vercel.app",
+    ],
     allow_origin_regex=r"https://aifin-frontend.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
@@ -41,13 +50,16 @@ app.include_router(api_router)
 from app.backend.routes.pageindex import router as pageindex_router
 app.include_router(pageindex_router)
 
+
 @app.on_event("startup")
 async def startup_event():
-    """Startup event to check Ollama availability."""
+    """Startup: check Ollama availability and start PDF queue worker."""
+
+    # ── Ollama check ──────────────────────────────────────────────────────
     try:
         logger.info("Checking Ollama availability...")
         status = await ollama_service.check_ollama_status()
-        
+
         if status["installed"]:
             if status["running"]:
                 logger.info(f"✓ Ollama is installed and running at {status['server_url']}")
@@ -57,11 +69,16 @@ async def startup_event():
                     logger.info("ℹ No models are currently downloaded")
             else:
                 logger.info("ℹ Ollama is installed but not running")
-                logger.info("ℹ You can start it from the Settings page or manually with 'ollama serve'")
         else:
-            logger.info("ℹ Ollama is not installed. Install it to use local models.")
-            logger.info("ℹ Visit https://ollama.com to download and install Ollama")
-            
+            logger.info("ℹ Ollama is not installed. Visit https://ollama.com to install.")
+
     except Exception as e:
         logger.warning(f"Could not check Ollama status: {e}")
-        logger.info("ℹ Ollama integration is available if you install it later")
+
+    # ── PDF queue worker ──────────────────────────────────────────────────
+    try:
+        from app.backend.services.pdf_queue import pdf_queue
+        pdf_queue.start()
+        logger.info("✓ PDF queue worker started")
+    except Exception as e:
+        logger.warning(f"Could not start PDF queue worker: {e}")

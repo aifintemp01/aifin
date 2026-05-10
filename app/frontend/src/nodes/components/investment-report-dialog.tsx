@@ -27,8 +27,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { extractBaseAgentKey } from '@/data/node-mappings';
+import { requestPDF } from '@/services/pdf-api';
 import { createAgentDisplayNames } from '@/utils/text-utils';
-import { ArrowDown, ArrowUp, Minus } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, FileDown, Mail, Minus, X } from 'lucide-react';
+import { useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -47,75 +49,94 @@ export function InvestmentReportDialog({
   outputNodeData,
   connectedAgentIds,
 }: InvestmentReportDialogProps) {
-  // Check if this is a backtest result and return early if it is
-  // Backtest results should be displayed in the backtest output tab, not in the investment report dialog
+  // ── PDF state ───────────────────────────────────────────────────────────
+  const [showPDFForm, setShowPDFForm] = useState(false);
+  const [pdfEmail, setPdfEmail] = useState('');
+  const [pdfSubmitting, setPdfSubmitting] = useState(false);
+  const [pdfQueued, setPdfQueued] = useState(false);
+
+  const handleGeneratePDF = async () => {
+    if (!pdfEmail || !outputNodeData) return;
+    setPdfSubmitting(true);
+    try {
+      await requestPDF(pdfEmail, {
+        decisions: outputNodeData.decisions,
+        analyst_signals: outputNodeData.analyst_signals,
+        current_prices: outputNodeData.current_prices,
+        tickers: Object.keys(outputNodeData.decisions || {}),
+      });
+      setPdfQueued(true);
+      setShowPDFForm(false);
+      setPdfEmail('');
+    } catch (e) {
+      console.error('[PDF] request failed:', e);
+    } finally {
+      setPdfSubmitting(false);
+    }
+  };
+
+  const resetPDFState = () => {
+    setShowPDFForm(false);
+    setPdfEmail('');
+    setPdfQueued(false);
+    setPdfSubmitting(false);
+  };
+
+  // ── early returns ───────────────────────────────────────────────────────
   if (outputNodeData?.decisions?.backtest?.type === 'backtest_complete') {
     return null;
   }
-
-  // Return early if no output data
   if (!outputNodeData || !outputNodeData.decisions) {
     return null;
   }
 
+  // ── helpers ─────────────────────────────────────────────────────────────
   const getActionIcon = (action: ActionType) => {
     switch (action) {
-      case 'long':
-        return <ArrowUp className="h-4 w-4 text-green-500" />;
-      case 'short':
-        return <ArrowDown className="h-4 w-4 text-red-500" />;
-      case 'hold':
-        return <Minus className="h-4 w-4 text-yellow-500" />;
-      default:
-        return null;
+      case 'long':  return <ArrowUp className="h-4 w-4 text-green-500" />;
+      case 'short': return <ArrowDown className="h-4 w-4 text-red-500" />;
+      case 'hold':  return <Minus className="h-4 w-4 text-yellow-500" />;
+      default:      return null;
     }
   };
 
   const getSignalBadge = (signal: string) => {
-    const variant = signal === 'bullish' ? 'success' :
-                   signal === 'bearish' ? 'destructive' : 'outline';
-
-    return (
-      <Badge variant={variant as any}>
-        {signal}
-      </Badge>
-    );
+    const variant =
+      signal === 'bullish' ? 'success' :
+      signal === 'bearish' ? 'destructive' : 'outline';
+    return <Badge variant={variant as any}>{signal}</Badge>;
   };
 
   const getConfidenceBadge = (confidence: number) => {
-    let variant = 'outline';
-    if (confidence >= 50) variant = 'success';
-    else if (confidence >= 0) variant = 'warning';
-    else variant = 'outline';
-    const rounded = Number(confidence.toFixed(1));
-    return (
-      <Badge variant={variant as any}>
-        {rounded}%
-      </Badge>
-    );
+    const variant = confidence >= 50 ? 'success' : confidence >= 0 ? 'warning' : 'outline';
+    return <Badge variant={variant as any}>{Number(confidence.toFixed(1))}%</Badge>;
   };
 
-  // Extract unique tickers from the data
   const tickers = Object.keys(outputNodeData.decisions || {});
-
-  // Use the unique node IDs directly since they're now stored as keys in analyst_signals
   const connectedUniqueAgentIds = Array.from(connectedAgentIds);
-  const agents = Object.keys(outputNodeData.analyst_signals || {})
-    .filter(agent =>
-      extractBaseAgentKey(agent) !== 'risk_management_agent' && connectedUniqueAgentIds.includes(agent)
-    );
-
+  const agents = Object.keys(outputNodeData.analyst_signals || {}).filter(
+    (agent) =>
+      extractBaseAgentKey(agent) !== 'risk_management_agent' &&
+      connectedUniqueAgentIds.includes(agent),
+  );
   const agentDisplayNames = createAgentDisplayNames(agents);
 
+  // ── render ──────────────────────────────────────────────────────────────
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) resetPDFState();
+        onOpenChange(open);
+      }}
+    >
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-bold">Investment Report</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-8 my-4">
-          {/* Summary Section */}
+          {/* ── Summary ──────────────────────────────────────────────── */}
           <section>
             <h2 className="text-lg font-semibold mb-4">Summary</h2>
             <Card>
@@ -136,13 +157,15 @@ export function InvestmentReportDialog({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {tickers.map(ticker => {
+                    {tickers.map((ticker) => {
                       const decision = outputNodeData.decisions[ticker];
                       const currentPrice = outputNodeData.current_prices?.[ticker] || 'N/A';
                       return (
                         <TableRow key={ticker}>
                           <TableCell className="font-medium">{ticker}</TableCell>
-                          <TableCell>${typeof currentPrice === 'number' ? currentPrice.toFixed(2) : currentPrice}</TableCell>
+                          <TableCell>
+                            ${typeof currentPrice === 'number' ? currentPrice.toFixed(2) : currentPrice}
+                          </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
                               {getActionIcon(decision.action as ActionType)}
@@ -159,11 +182,71 @@ export function InvestmentReportDialog({
               </CardContent>
             </Card>
           </section>
-          {/* Analyst Signals Section */}
+
+          {/* ── PDF Report strip ─────────────────────────────────────── */}
+          <div className="flex items-center gap-3 rounded-lg border border-dashed border-border px-4 py-2.5">
+            {/* Idle — show button */}
+            {!showPDFForm && !pdfQueued && (
+              <button
+                onClick={() => setShowPDFForm(true)}
+                className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <FileDown className="h-4 w-4" />
+                Generate PDF Report
+              </button>
+            )}
+
+            {/* Email input form */}
+            {showPDFForm && !pdfQueued && (
+              <>
+                <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <input
+                  type="email"
+                  placeholder="your@email.com"
+                  value={pdfEmail}
+                  onChange={(e) => setPdfEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleGeneratePDF()}
+                  className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  autoFocus
+                />
+                <button
+                  onClick={handleGeneratePDF}
+                  disabled={pdfSubmitting || !pdfEmail.includes('@')}
+                  className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-40"
+                >
+                  {pdfSubmitting ? 'Queuing…' : 'Send PDF'}
+                </button>
+                <button
+                  onClick={() => { setShowPDFForm(false); setPdfEmail(''); }}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </>
+            )}
+
+            {/* Queued confirmation */}
+            {pdfQueued && (
+              <>
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />
+                <span className="flex-1 text-sm text-muted-foreground">
+                  PDF queued — check your email shortly
+                </span>
+                <button
+                  onClick={resetPDFState}
+                  className="text-sm text-muted-foreground hover:text-foreground"
+                >
+                  Generate another
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* ── Analyst Signals ──────────────────────────────────────── */}
           <section>
             <h2 className="text-lg font-semibold mb-4">Analyst Signals</h2>
             <Accordion type="multiple" className="w-full">
-              {tickers.map(ticker => (
+              {tickers.map((ticker) => (
                 <AccordionItem key={ticker} value={ticker}>
                   <AccordionTrigger className="text-base font-medium px-4 py-3 bg-muted/30 rounded-md hover:bg-muted/50">
                     <div className="flex items-center gap-2">
@@ -171,19 +254,18 @@ export function InvestmentReportDialog({
                       <div className="flex items-center gap-1">
                         {getActionIcon(outputNodeData.decisions[ticker].action as ActionType)}
                         <span className="text-sm font-normal text-muted-foreground">
-                          {outputNodeData.decisions[ticker].action} {outputNodeData.decisions[ticker].quantity} shares
+                          {outputNodeData.decisions[ticker].action}{' '}
+                          {outputNodeData.decisions[ticker].quantity} shares
                         </span>
                       </div>
                     </div>
                   </AccordionTrigger>
                   <AccordionContent className="pt-4 px-1">
                     <div className="space-y-4">
-                      {/* Agent Signals */}
                       <div className="grid grid-cols-1 gap-4">
-                        {agents.map(agent => {
+                        {agents.map((agent) => {
                           const signal = outputNodeData.analyst_signals[agent]?.[ticker];
                           if (!signal) return null;
-
                           return (
                             <Card key={agent} className="overflow-hidden">
                               <CardHeader className="bg-muted/50 pb-3">
@@ -199,9 +281,7 @@ export function InvestmentReportDialog({
                               </CardHeader>
                               <CardContent className="pt-3">
                                 {typeof signal.reasoning === 'string' ? (
-                                  <p className="text-sm whitespace-pre-line">
-                                    {signal.reasoning}
-                                  </p>
+                                  <p className="text-sm whitespace-pre-line">{signal.reasoning}</p>
                                 ) : (
                                   <div className="max-h-48 overflow-y-auto bg-muted/30">
                                     <SyntaxHighlighter
