@@ -152,6 +152,29 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                         }
                     )
                     yield final_data.to_sse()
+ 
+                    # ── Persist results to SQLite (non-critical) ──────────────
+                    try:
+                        if request_data.flow_id:
+                            from app.backend.repositories.flow_run_repository import FlowRunRepository
+                            from app.backend.models.schemas import FlowRunStatus
+                            run_repo = FlowRunRepository(db)
+                            fid = str(request_data.flow_id)
+                            if fid.isdigit():
+                                latest = run_repo.get_latest_flow_run(int(fid))
+                                if latest:
+                                    run_repo.update_flow_run(
+                                        run_id=latest.id,
+                                        status=FlowRunStatus.COMPLETE,
+                                        results={
+                                            "decisions": decisions,
+                                            "analyst_signals": result.get("data", {}).get("analyst_signals", {}),
+                                            "current_prices": result.get("data", {}).get("current_prices", {}),
+                                            "tickers": request_data.tickers,
+                                        },
+                                    )
+                    except Exception as _persist_err:
+                        print(f"[non-critical] run result persistence failed: {_persist_err}")
                 except Exception as e:
                     print(f"Error in final data processing: {e}")
 
