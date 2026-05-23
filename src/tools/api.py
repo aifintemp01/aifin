@@ -729,3 +729,22 @@ def prices_to_df(prices: list[Price]) -> pd.DataFrame:
 def get_price_data(ticker: str, start_date: str, end_date: str, api_key: str = None) -> pd.DataFrame:
     prices = get_prices(ticker, start_date, end_date, api_key=api_key)
     return prices_to_df(prices)
+
+def prefetch_ticker_data(ticker: str, start_date: str = None, end_date: str = None) -> None:
+    """Pre-fetch and cache all financial data for a ticker before parallel agents run."""
+    for fetch_fn, label in [
+        (_fetch_income_statement, "income"),
+        (_fetch_balance_sheet, "balance"),
+        (_fetch_cash_flow, "cashflow"),
+        (_fetch_statistics, "statistics"),
+    ]:
+        try:
+            fetch_fn(ticker)
+        except Exception as e:
+            print(f"[prefetch] {label} failed for {ticker}: {e}")
+    
+    if start_date and end_date:
+        try:
+            get_prices(ticker, start_date, end_date)
+        except Exception as e:
+            print(f"[prefetch] prices failed for {ticker}: {e}")

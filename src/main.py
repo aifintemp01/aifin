@@ -93,7 +93,18 @@ def run_hedge_fund(
 
 
 def start(state: AgentState):
-    """Initialize the workflow with the input message."""
+    """Pre-fetch all financial data for all tickers before parallel agents run.
+    This ensures every agent reads from cache — zero duplicate API calls."""
+    tickers = state.get("data", {}).get("tickers", [])
+    start_date = state.get("data", {}).get("start_date", "")
+    end_date = state.get("data", {}).get("end_date", "")
+
+    if tickers:
+        from src.tools.api import prefetch_ticker_data
+        for ticker in tickers:
+            print(f"[start] Pre-fetching {ticker}...")
+            prefetch_ticker_data(ticker, start_date, end_date)
+
     return state
 
 
