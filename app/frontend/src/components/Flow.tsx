@@ -193,30 +193,53 @@ export function Flow({ className = '' }: FlowProps) {
     if (!isInitialized) setIsInitialized(true);
   }, [isInitialized]);
 
-  const onConnect = useCallback(
-    (connection: Connection) => {
-      const newEdge: Edge = {
-        ...connection,
-        id: `edge-${Date.now()}`,
-        markerEnd: { type: MarkerType.ArrowClosed },
-      };
-      setEdges((eds) => addEdge(newEdge, eds));
-      
-      if (currentFlowId) {
-        const flowIdAtTimeOfChange = currentFlowId;
-        if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
-        setTimeout(async () => {
-          if (flowIdAtTimeOfChange !== currentFlowId) return;
-          try {
-            await saveCurrentFlowWithCompleteState();
-          } catch (error) {
-            console.error(`[Auto-save] Failed to save new connection for flow ${flowIdAtTimeOfChange}:`, error);
-          }
-        }, 100);
-      }
-    },
-    [setEdges, currentFlowId, saveCurrentFlowWithCompleteState]
-  );
+  // Add this constant above the Flow function
+const EDGE_COLORS = [
+  '#3b82f6', // blue
+  '#8b5cf6', // purple
+  '#06b6d4', // cyan
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#ef4444', // red
+  '#ec4899', // pink
+  '#84cc16', // lime
+];
+
+// Inside the Flow function, add this ref
+const edgeColorIndexRef = useRef(0);
+
+// Replace the onConnect callback with this
+const onConnect = useCallback(
+  (connection: Connection) => {
+    const color = EDGE_COLORS[edgeColorIndexRef.current % EDGE_COLORS.length];
+    edgeColorIndexRef.current += 1;
+
+    const newEdge: Edge = {
+      ...connection,
+      id: `edge-${Date.now()}`,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: color,
+      },
+      style: { stroke: color, strokeWidth: 2 },
+    };
+    setEdges((eds) => addEdge(newEdge, eds));
+
+    if (currentFlowId) {
+      const flowIdAtTimeOfChange = currentFlowId;
+      if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+      setTimeout(async () => {
+        if (flowIdAtTimeOfChange !== currentFlowId) return;
+        try {
+          await saveCurrentFlowWithCompleteState();
+        } catch (error) {
+          console.error(`[Auto-save] Failed to save new connection:`, error);
+        }
+      }, 100);
+    }
+  },
+  [setEdges, currentFlowId, saveCurrentFlowWithCompleteState]
+);
 
   const backgroundStyle = { backgroundColor: 'hsl(var(--background))' };
   const gridColor = resolvedTheme === 'light'
