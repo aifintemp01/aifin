@@ -17,6 +17,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription
 } from '@/components/ui/dialog';
 import {
   Table,
@@ -132,6 +133,9 @@ export function InvestmentReportDialog({
     >
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
+        <DialogDescription className="sr-only">
+          Investment analysis report showing trading signals and analyst recommendations
+        </DialogDescription>
           <DialogTitle className="text-xl font-bold">Investment Report</DialogTitle>
         </DialogHeader>
 
