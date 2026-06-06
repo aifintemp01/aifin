@@ -72,7 +72,13 @@ class LineItem(BaseModel):
     currency: str
 
     # Allow additional fields dynamically
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "allow", "populate_by_name": True}
+
+    def __getattr__(self, name: str):
+        try:
+            return self.model_extra[name]
+        except (KeyError, TypeError):
+            raise AttributeError(f"'LineItem' object has no attribute '{name}'")
 
 
 class LineItemResponse(BaseModel):
