@@ -80,6 +80,7 @@ def run_hedge_fund(
                     "model_name": model_name,
                     "model_provider": model_provider,
                 },
+                "layer_context": {},
             },
         )
 

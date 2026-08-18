@@ -78,7 +78,7 @@ class LineItem(BaseModel):
         try:
             return self.model_extra[name]
         except (KeyError, TypeError):
-            raise AttributeError(f"'LineItem' object has no attribute '{name}'")
+            return None
 
 
 class LineItemResponse(BaseModel):
