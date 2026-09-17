@@ -4,9 +4,12 @@ from sqlalchemy.orm import sessionmaker
 import os
 from pathlib import Path
 
-# Get the backend directory path
-BACKEND_DIR = Path(__file__).parent.parent
-DATABASE_PATH = BACKEND_DIR / "hedge_fund.db"
+# Data directory — separate from source code so it can be safely volume-mounted
+# (mounting a volume directly over app/backend would shadow the source files
+# with whatever snapshot existed when the volume was first created)
+DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_PATH = DATA_DIR / "hedge_fund.db"
 
 # Database configuration - use absolute path
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
@@ -29,4 +32,4 @@ def get_db():
     try:
         yield db
     finally:
-        db.close() 
+        db.close()

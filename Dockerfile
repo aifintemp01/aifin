@@ -1,8 +1,23 @@
 # ============================================================
+# Stage 0 — Frontend build (separate target, not part of backend image)
+# deploy.sh builds this target alone and extracts dist/ to the host
+# for nginx to serve. Never copied into the backend stage below.
+# ============================================================
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /app/app/frontend
+
+COPY app/frontend/package.json app/frontend/package-lock.json ./
+RUN npm ci
+
+COPY app/frontend/ ./
+RUN npm run build
+
+# ============================================================
 # Stage 1 — Base image
 # Python 3.11 slim keeps the image small
 # ============================================================
-FROM python:3.11-slim
+FROM python:3.11-slim AS backend
 
 # ============================================================
 # Stage 2 — System dependencies
@@ -23,6 +38,9 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    fontconfig \
+    fonts-liberation \
+    && fc-cache -f -v \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================

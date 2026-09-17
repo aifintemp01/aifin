@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
+import os
 
 from app.backend.routes import api_router
 from app.backend.database.connection import engine
@@ -28,17 +29,19 @@ def health():
 Base.metadata.create_all(bind=engine)
 
 # Configure CORS
+# Local dev origins are always allowed; production origins (droplet IP/domain)
+# come from CORS_ORIGINS in .env as a comma-separated list.
+_dev_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+]
+_env_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "https://aifin-production.up.railway.app",
-        "https://aifin-frontend.vercel.app",
-    ],
-    allow_origin_regex=r"https://aifin-frontend.*\.vercel\.app",
+    allow_origins=_dev_origins + _env_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

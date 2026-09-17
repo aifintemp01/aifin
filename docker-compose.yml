@@ -4,14 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       # PDFs, markdown, tree JSONs — persist across redeploys
       - uploads_data:/app/pageocr/uploads
       # ChromaDB embeddings — persist across redeploys
       - chroma_data:/app/pageocr/chroma_db
       # SQLite database — persist across redeploys
-      - sqlite_data:/app/app/backend
+      # Mounted at /app/data (its own directory), NOT /app/app/backend —
+      # mounting over the source folder would freeze it at whatever
+      # snapshot existed when the volume was first created, silently
+      # hiding every future code change (this bit us during local testing)
+      - sqlite_data:/app/data
 
     env_file:
       - .env
