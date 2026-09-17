@@ -8,6 +8,7 @@ set -e
 
 REPO_URL="https://github.com/aifintemp01/aifin.git"
 APP_DIR="/opt/ai-hedge-fund"
+SERVER_IP=$(curl -s ifconfig.me)
 
 echo "========================================"
 echo " AIFIN — Server Setup"
@@ -61,7 +62,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
     echo "    nano $APP_DIR/.env"
     echo ""
     echo "  Fill in your LLM API keys, TWELVE_DATA_API_KEY, NEWSDATA_API_KEY,"
-    echo "  and CORS_ORIGINS=http://$(curl -s ifconfig.me)"
+    echo "  and CORS_ORIGINS=http://$SERVER_IP"
     echo ""
     read -p "  Press Enter when .env is ready..."
 else
@@ -72,7 +73,9 @@ fi
 # ── 7. Build frontend and start backend ─────────────────────
 echo "[7/8] Building frontend..."
 cd "$APP_DIR"
-docker build --target frontend-builder -t aifin-frontend-builder .
+docker build --target frontend-builder \
+    --build-arg VITE_API_URL="http://$SERVER_IP" \
+    -t aifin-frontend-builder .
 
 # Extract the built dist/ folder out of the throwaway build container
 CONTAINER_ID=$(docker create aifin-frontend-builder)
@@ -93,7 +96,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
 # ── Done ────────────────────────────────────────────────────
-IP=$(curl -s ifconfig.me)
+IP=$SERVER_IP
 echo ""
 echo "========================================"
 echo " Setup complete!"
