@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-"""Growth Agent
-
-Implements a growth-focused analysis methodology with LLM summary.
-"""
-
 import json
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,24 +21,38 @@ class GrowthSignal(BaseModel):
     reasoning: str
 
 
-def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agent"):
-    """Run growth analysis across tickers and write signals back to state."""
+def growth_analyst_agent(
+    state: AgentState,
+    agent_id: str = "growth_analyst_agent",
+    layer: int = 1,
+    is_last_hidden: bool = True,
+    upstream_agent_ids: list = None,
+):
+    """Run growth analysis across tickers. Layer-aware."""
 
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
     api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
+
     growth_analysis: dict[str, dict] = {}
+    layer_context_updates: dict = {}
 
     for ticker in tickers:
-        progress.update_status(agent_id, ticker, "Fetching financial data")
+        # ── Gather upstream context (Layer 2+) ───────────────────────────────
+        upstream_context: dict = {}
+        if layer > 1 and upstream_agent_ids:
+            lc = state.get("layer_context", {})
+            for upstream_id in upstream_agent_ids:
+                ctx_key = f"{upstream_id}:{ticker}"
+                if ctx_key in lc:
+                    upstream_context[upstream_id] = lc[ctx_key]
+            if upstream_context:
+                print(f"[{agent_id}] Layer {layer} — injecting context from: {list(upstream_context.keys())}")
 
+        progress.update_status(agent_id, ticker, "Fetching financial data")
         financial_metrics = get_financial_metrics(
-            ticker=ticker,
-            end_date=end_date,
-            period="ttm",
-            limit=12,
-            api_key=api_key,
+            ticker=ticker, end_date=end_date, period="ttm", limit=12, api_key=api_key,
         )
         if not financial_metrics or len(financial_metrics) < 4:
             progress.update_status(agent_id, ticker, "Failed: Not enough financial metrics")
@@ -52,12 +61,7 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
         most_recent_metrics = financial_metrics[0]
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(
-            ticker=ticker,
-            end_date=end_date,
-            limit=1000,
-            api_key=api_key,
-        )
+        insider_trades = get_insider_trades(ticker=ticker, end_date=end_date, limit=1000, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Analyzing growth trends")
         growth_trends = analyze_growth_trends(financial_metrics)
@@ -74,9 +78,6 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
         progress.update_status(agent_id, ticker, "Checking financial health")
         financial_health = check_financial_health(most_recent_metrics)
 
-        # ------------------------------------------------------------------
-        # Aggregate & signal
-        # ------------------------------------------------------------------
         scores = {
             "growth": growth_trends["score"],
             "valuation": valuation_metrics["score"],
@@ -84,15 +85,7 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             "insider": insider_conviction["score"],
             "health": financial_health["score"],
         }
-
-        weights = {
-            "growth": 0.40,
-            "valuation": 0.25,
-            "margins": 0.15,
-            "insider": 0.10,
-            "health": 0.10,
-        }
-
+        weights = {"growth": 0.40, "valuation": 0.25, "margins": 0.15, "insider": 0.10, "health": 0.10}
         weighted_score = sum(scores[key] * weights[key] for key in scores)
 
         if weighted_score > 0.6:
@@ -115,21 +108,34 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             "weighted_score": round(weighted_score, 2),
         }
 
-        # ------------------------------------------------------------------
-        # LLM summary
-        # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Generating growth analysis")
         growth_output = generate_growth_output(
             ticker=ticker,
             analysis_data=reasoning,
             state=state,
             agent_id=agent_id,
+            upstream_context=upstream_context,
         )
 
         growth_analysis[ticker] = {
             "signal": growth_output.signal,
             "confidence": growth_output.confidence,
             "reasoning": growth_output.reasoning,
+        }
+
+        # ── Build context JSON for downstream layers ──────────────────────────
+        layer_context_updates[f"{agent_id}:{ticker}"] = {
+            "agent": agent_id,
+            "ticker": ticker,
+            "layer": layer,
+            "signal": growth_output.signal,
+            "confidence": growth_output.confidence,
+            "key_findings": [
+                f"Weighted score: {weighted_score:.2f}",
+                f"Revenue growth: {growth_trends.get('revenue_growth', 'N/A')}",
+                f"EPS growth: {growth_trends.get('eps_growth', 'N/A')}",
+            ],
+            "data_summary": growth_output.reasoning[:300],
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=growth_output.reasoning)
@@ -139,22 +145,37 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(growth_analysis, "Growth Analysis Agent")
 
-    state["data"]["analyst_signals"][agent_id] = growth_analysis
+    if is_last_hidden:
+        state["data"]["analyst_signals"][agent_id] = growth_analysis
+    else:
+        print(f"[{agent_id}] Layer {layer} intermediate — writing to layer_context only")
+
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [msg], "data": data}
+    return {
+        "messages": [msg],
+        "data": data,
+        "layer_context": layer_context_updates,
+    }
 
 
-# ---------------------------------------------------------------------------
-# LLM Output Generator
-# ---------------------------------------------------------------------------
+# ── LLM Output Generator ─────────────────────────────────────────────────────
 
 def generate_growth_output(
     ticker: str,
     analysis_data: dict,
     state: AgentState,
     agent_id: str,
+    upstream_context: dict = None,
 ) -> GrowthSignal:
+
+    upstream_section = ""
+    if upstream_context:
+        upstream_section = "\n\nContext from upstream agents:\n"
+        for upstream_id, ctx in upstream_context.items():
+            upstream_section += f"{ctx.get('agent', upstream_id)}: {json.dumps(ctx, indent=2)}\n"
+        upstream_section += "\nIncorporate this context into your growth assessment.\n"
+
     template = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -165,11 +186,11 @@ def generate_growth_output(
             - Financial health to sustain growth
 
             When providing reasoning:
-            1. Lead with revenue and EPS growth rates and whether they are accelerating
-            2. Comment on margin trends — expanding margins amplify growth quality
+            1. Lead with revenue and EPS growth rates and acceleration
+            2. Comment on margin trends
             3. Reference PEG and P/S ratios relative to growth
-            4. Note financial health — high debt can derail growth stories
-            5. Conclude with a clear growth thesis or concern
+            4. Note financial health
+            5. Conclude with a clear growth thesis
 
             Return JSON only.""",
         ),
@@ -177,52 +198,38 @@ def generate_growth_output(
             "human",
             """Based on the following growth analysis for {ticker}, generate a signal.
 
-            Analysis:
-            {analysis_data}
-
-            Return exactly:
-            {{
-              "signal": "bullish" | "bearish" | "neutral",
-              "confidence": float (0-100),
-              "reasoning": "string"
-            }}""",
+Analysis:
+{analysis_data}
+{upstream_context}
+Return exactly:
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float (0-100),
+  "reasoning": "string"
+}}""",
         ),
     ])
 
     prompt = template.invoke({
         "ticker": ticker,
         "analysis_data": json.dumps(analysis_data, indent=2),
+        "upstream_context": upstream_section,
     })
 
     def default_signal():
-        return GrowthSignal(
-            signal="neutral",
-            confidence=0.0,
-            reasoning="Error in growth analysis, defaulting to neutral",
-        )
+        return GrowthSignal(signal="neutral", confidence=0.0, reasoning="Error in growth analysis, defaulting to neutral")
 
-    return call_llm(
-        prompt=prompt,
-        pydantic_model=GrowthSignal,
-        agent_name=agent_id,
-        state=state,
-        default_factory=default_signal,
-    )
+    return call_llm(prompt=prompt, pydantic_model=GrowthSignal, agent_name=agent_id, state=state, default_factory=default_signal)
 
 
-# ---------------------------------------------------------------------------
-# Helper Functions
-# ---------------------------------------------------------------------------
+# ── Helper Functions (unchanged from original) ────────────────────────────────
 
 def _calculate_trend(data: list) -> float:
-    """Calculates the slope of the trend line for the given data."""
     clean_data = [d for d in data if d is not None]
     if len(clean_data) < 2:
         return 0.0
-
     x = list(range(len(clean_data)))
     y = clean_data
-
     try:
         n = len(y)
         sum_x = sum(x)
@@ -236,7 +243,6 @@ def _calculate_trend(data: list) -> float:
 
 
 def analyze_growth_trends(metrics: list) -> dict:
-    """Analyzes historical growth trends from FinancialMetrics objects."""
     rev_growth = [m.revenue_growth for m in metrics]
     eps_growth = [m.earnings_per_share_growth for m in metrics]
     fcf_growth = [m.free_cash_flow_growth for m in metrics]
@@ -246,26 +252,16 @@ def analyze_growth_trends(metrics: list) -> dict:
     fcf_trend = _calculate_trend(fcf_growth)
 
     score = 0.0
-
     if rev_growth[0] is not None:
-        if rev_growth[0] > 0.20:
-            score += 0.4
-        elif rev_growth[0] > 0.10:
-            score += 0.2
-        if rev_trend > 0:
-            score += 0.1
-
+        if rev_growth[0] > 0.20: score += 0.4
+        elif rev_growth[0] > 0.10: score += 0.2
+        if rev_trend > 0: score += 0.1
     if eps_growth[0] is not None:
-        if eps_growth[0] > 0.20:
-            score += 0.25
-        elif eps_growth[0] > 0.10:
-            score += 0.1
-        if eps_trend > 0:
-            score += 0.05
-
+        if eps_growth[0] > 0.20: score += 0.25
+        elif eps_growth[0] > 0.10: score += 0.1
+        if eps_trend > 0: score += 0.05
     if fcf_growth[0] is not None:
-        if fcf_growth[0] > 0.15:
-            score += 0.1
+        if fcf_growth[0] > 0.15: score += 0.1
 
     return {
         "score": min(score, 1.0),
@@ -279,33 +275,19 @@ def analyze_growth_trends(metrics: list) -> dict:
 
 
 def analyze_valuation(metrics) -> dict:
-    """Analyzes valuation from a growth perspective."""
     peg_ratio = metrics.peg_ratio
     ps_ratio = metrics.price_to_sales_ratio
-
     score = 0.0
-
     if peg_ratio is not None:
-        if peg_ratio < 1.0:
-            score += 0.5
-        elif peg_ratio < 2.0:
-            score += 0.25
-
+        if peg_ratio < 1.0: score += 0.5
+        elif peg_ratio < 2.0: score += 0.25
     if ps_ratio is not None:
-        if ps_ratio < 2.0:
-            score += 0.5
-        elif ps_ratio < 5.0:
-            score += 0.25
-
-    return {
-        "score": min(score, 1.0),
-        "peg_ratio": peg_ratio,
-        "price_to_sales_ratio": ps_ratio,
-    }
+        if ps_ratio < 2.0: score += 0.5
+        elif ps_ratio < 5.0: score += 0.25
+    return {"score": min(score, 1.0), "peg_ratio": peg_ratio, "price_to_sales_ratio": ps_ratio}
 
 
 def analyze_margin_trends(metrics: list) -> dict:
-    """Analyzes historical margin trends from FinancialMetrics objects."""
     gross_margins = [m.gross_margin for m in metrics]
     operating_margins = [m.operating_margin for m in metrics]
     net_margins = [m.net_margin for m in metrics]
@@ -315,21 +297,13 @@ def analyze_margin_trends(metrics: list) -> dict:
     nm_trend = _calculate_trend(net_margins)
 
     score = 0.0
-
     if gross_margins[0] is not None:
-        if gross_margins[0] > 0.5:
-            score += 0.2
-        if gm_trend > 0:
-            score += 0.2
-
+        if gross_margins[0] > 0.5: score += 0.2
+        if gm_trend > 0: score += 0.2
     if operating_margins[0] is not None:
-        if operating_margins[0] > 0.15:
-            score += 0.2
-        if om_trend > 0:
-            score += 0.2
-
-    if nm_trend > 0:
-        score += 0.2
+        if operating_margins[0] > 0.15: score += 0.2
+        if om_trend > 0: score += 0.2
+    if nm_trend > 0: score += 0.2
 
     return {
         "score": min(score, 1.0),
@@ -343,15 +317,8 @@ def analyze_margin_trends(metrics: list) -> dict:
 
 
 def analyze_insider_conviction(trades: list) -> dict:
-    """Analyzes insider trading activity safely."""
     if not trades:
-        return {
-            "score": 0.5,
-            "net_flow_ratio": 0,
-            "buys": 0,
-            "sells": 0,
-            "details": "No insider trade data available — defaulting to neutral",
-        }
+        return {"score": 0.5, "net_flow_ratio": 0, "buys": 0, "sells": 0, "details": "No insider trade data — defaulting to neutral"}
 
     buys = sum(
         getattr(t, "transaction_value", 0) or 0
@@ -369,44 +336,22 @@ def analyze_insider_conviction(trades: list) -> dict:
     total = buys + sells
     net_flow_ratio = (buys - sells) / total if total > 0 else 0
 
-    if net_flow_ratio > 0.5:
-        score = 1.0
-    elif net_flow_ratio > 0.1:
-        score = 0.7
-    elif net_flow_ratio > -0.1:
-        score = 0.5
-    else:
-        score = 0.2
+    if net_flow_ratio > 0.5: score = 1.0
+    elif net_flow_ratio > 0.1: score = 0.7
+    elif net_flow_ratio > -0.1: score = 0.5
+    else: score = 0.2
 
-    return {
-        "score": score,
-        "net_flow_ratio": net_flow_ratio,
-        "buys": buys,
-        "sells": sells,
-    }
+    return {"score": score, "net_flow_ratio": net_flow_ratio, "buys": buys, "sells": sells}
 
 
 def check_financial_health(metrics) -> dict:
-    """Checks the company's financial health from FinancialMetrics object."""
     debt_to_equity = metrics.debt_to_equity
     current_ratio = metrics.current_ratio
-
     score = 1.0
-
     if debt_to_equity is not None:
-        if debt_to_equity > 1.5:
-            score -= 0.5
-        elif debt_to_equity > 0.8:
-            score -= 0.2
-
+        if debt_to_equity > 1.5: score -= 0.5
+        elif debt_to_equity > 0.8: score -= 0.2
     if current_ratio is not None:
-        if current_ratio < 1.0:
-            score -= 0.5
-        elif current_ratio < 1.5:
-            score -= 0.2
-
-    return {
-        "score": max(score, 0.0),
-        "debt_to_equity": debt_to_equity,
-        "current_ratio": current_ratio,
-    }
+        if current_ratio < 1.0: score -= 0.5
+        elif current_ratio < 1.5: score -= 0.2
+    return {"score": max(score, 0.0), "debt_to_equity": debt_to_equity, "current_ratio": current_ratio}

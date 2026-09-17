@@ -16,7 +16,13 @@ class MohnishPabraiSignal(BaseModel):
     reasoning: str
 
 
-def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agent"):
+def mohnish_pabrai_agent(
+    state: AgentState,
+    agent_id: str = "mohnish_pabrai_agent",
+    layer: int = 1,
+    is_last_hidden: bool = True,
+    upstream_agent_ids: list = None,
+):
     """Evaluate stocks using Mohnish Pabrai's checklist and 'heads I win, tails I don't lose much' approach."""
     data = state["data"]
     end_date = data["end_date"]
@@ -25,10 +31,20 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
 
     analysis_data: dict[str, any] = {}
     pabrai_analysis: dict[str, any] = {}
+    layer_context_updates: dict = {}
 
-    # Pabrai focuses on: downside protection, simple business, moat via unit economics, FCF yield vs alternatives,
-    # and potential for doubling in 2-3 years at low risk.
     for ticker in tickers:
+        # ── Gather upstream context (Layer 2+) ───────────────────────────────
+        upstream_context: dict = {}
+        if layer > 1 and upstream_agent_ids:
+            lc = state.get("layer_context", {})
+            for upstream_id in upstream_agent_ids:
+                ctx_key = f"{upstream_id}:{ticker}"
+                if ctx_key in lc:
+                    upstream_context[upstream_id] = lc[ctx_key]
+            if upstream_context:
+                print(f"[{agent_id}] Layer {layer} — injecting context from: {list(upstream_context.keys())}")
+
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
         metrics = get_financial_metrics(ticker, end_date, period="annual", limit=8, api_key=api_key)
 
@@ -36,24 +52,11 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
         line_items = search_line_items(
             ticker,
             [
-                # Profitability and cash generation
-                "revenue",
-                "gross_profit",
-                "gross_margin",
-                "operating_income",
-                "operating_margin",
-                "net_income",
-                "free_cash_flow",
-                # Balance sheet - debt and liquidity
-                "total_debt",
-                "cash_and_equivalents",
-                "current_assets",
-                "current_liabilities",
-                "shareholders_equity",
-                # Capital intensity
-                "capital_expenditure",
-                "depreciation_and_amortization",
-                # Shares outstanding for per-share context
+                "revenue", "gross_profit", "gross_margin", "operating_income",
+                "operating_margin", "net_income", "free_cash_flow",
+                "total_debt", "cash_and_equivalents", "current_assets",
+                "current_liabilities", "shareholders_equity",
+                "capital_expenditure", "depreciation_and_amortization",
                 "outstanding_shares",
             ],
             end_date,
@@ -74,7 +77,6 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
         progress.update_status(agent_id, ticker, "Assessing potential to double")
         double_potential = analyze_double_potential(line_items, market_cap)
 
-        # Combine to an overall score in spirit of Pabrai: heavily weight downside and cash yield
         total_score = (
             downside["score"] * 0.45
             + valuation["score"] * 0.35
@@ -105,12 +107,28 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
             analysis_data=analysis_data,
             state=state,
             agent_id=agent_id,
+            upstream_context=upstream_context,
         )
 
         pabrai_analysis[ticker] = {
             "signal": pabrai_output.signal,
             "confidence": pabrai_output.confidence,
             "reasoning": pabrai_output.reasoning,
+        }
+
+        # ── Build context JSON for downstream layers ──────────────────────────
+        layer_context_updates[f"{agent_id}:{ticker}"] = {
+            "agent": agent_id,
+            "ticker": ticker,
+            "layer": layer,
+            "signal": pabrai_output.signal,
+            "confidence": pabrai_output.confidence,
+            "key_findings": [
+                f"Pabrai score: {total_score:.1f}/{max_score}",
+                f"Downside: {downside.get('details', 'N/A')[:80]}",
+                f"FCF yield: {valuation.get('fcf_yield', 0):.1%}" if valuation.get('fcf_yield') else "FCF yield: N/A",
+            ],
+            "data_summary": pabrai_output.reasoning[:300],
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=pabrai_output.reasoning)
@@ -120,15 +138,23 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(pabrai_analysis, "Mohnish Pabrai Agent")
 
+    if is_last_hidden:
+        state["data"]["analyst_signals"][agent_id] = pabrai_analysis
+    else:
+        print(f"[{agent_id}] Layer {layer} intermediate — writing to layer_context only")
+
     progress.update_status(agent_id, None, "Done")
 
-    state["data"]["analyst_signals"][agent_id] = pabrai_analysis
+    return {
+        "messages": [message],
+        "data": state["data"],
+        "layer_context": layer_context_updates,
+    }
 
-    return {"messages": [message], "data": state["data"]}
 
+# ── Analysis helpers (unchanged from original) ────────────────────────────────
 
 def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
-    """Assess balance-sheet strength and downside resiliency (capital preservation first)."""
     if not financial_line_items:
         return {"score": 0, "details": "Insufficient data"}
 
@@ -136,14 +162,12 @@ def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
     details: list[str] = []
     score = 0
 
-    cash = getattr(latest, "cash_and_equivalents", None)
-    debt = getattr(latest, "total_debt", None)
-    current_assets = getattr(latest, "current_assets", None)
-    current_liabilities = getattr(latest, "current_liabilities", None)
-    equity = getattr(latest, "shareholders_equity", None)
+    cash = latest.cash_and_equivalents
+    debt = latest.total_debt
+    current_assets = latest.current_assets
+    current_liabilities = latest.current_liabilities
+    equity = latest.shareholders_equity
 
-    # Net cash position is a strong downside protector
-    net_cash = None
     if cash is not None and debt is not None:
         net_cash = cash - debt
         if net_cash > 0:
@@ -152,7 +176,6 @@ def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
         else:
             details.append(f"Net debt position: ${net_cash:,.0f}")
 
-    # Current ratio
     if current_assets is not None and current_liabilities is not None and current_liabilities > 0:
         current_ratio = current_assets / current_liabilities
         if current_ratio >= 2.0:
@@ -164,7 +187,6 @@ def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
         else:
             details.append(f"Weak liquidity (current ratio {current_ratio:.2f})")
 
-    # Low leverage
     if equity is not None and equity > 0 and debt is not None:
         de_ratio = debt / equity
         if de_ratio < 0.3:
@@ -176,8 +198,7 @@ def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
         else:
             details.append(f"High leverage (D/E {de_ratio:.2f})")
 
-    # Free cash flow positive and stable
-    fcf_values = [getattr(li, "free_cash_flow", None) for li in financial_line_items if getattr(li, "free_cash_flow", None) is not None]
+    fcf_values = [li.free_cash_flow for li in financial_line_items if li.free_cash_flow is not None]
     if fcf_values and len(fcf_values) >= 3:
         recent_avg = sum(fcf_values[:3]) / 3
         older = sum(fcf_values[-3:]) / 3 if len(fcf_values) >= 6 else fcf_values[-1]
@@ -194,13 +215,11 @@ def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:
 
 
 def analyze_pabrai_valuation(financial_line_items: list, market_cap: float | None) -> dict[str, any]:
-    """Value via simple FCF yield and asset-light preference (keep it simple, low mistakes)."""
     if not financial_line_items or market_cap is None or market_cap <= 0:
         return {"score": 0, "details": "Insufficient data", "fcf_yield": None, "normalized_fcf": None}
 
     details: list[str] = []
-    fcf_values = [getattr(li, "free_cash_flow", None) for li in financial_line_items if getattr(li, "free_cash_flow", None) is not None]
-    capex_vals = [abs(getattr(li, "capital_expenditure", 0) or 0) for li in financial_line_items]
+    fcf_values = [li.free_cash_flow for li in financial_line_items if li.free_cash_flow is not None]
 
     if not fcf_values or len(fcf_values) < 3:
         return {"score": 0, "details": "Insufficient FCF history", "fcf_yield": None, "normalized_fcf": None}
@@ -210,8 +229,8 @@ def analyze_pabrai_valuation(financial_line_items: list, market_cap: float | Non
         return {"score": 0, "details": "Non-positive normalized FCF", "fcf_yield": None, "normalized_fcf": normalized_fcf}
 
     fcf_yield = normalized_fcf / market_cap
-
     score = 0
+
     if fcf_yield > 0.10:
         score += 4
         details.append(f"Exceptional value: {fcf_yield:.1%} FCF yield")
@@ -227,39 +246,34 @@ def analyze_pabrai_valuation(financial_line_items: list, market_cap: float | Non
     else:
         details.append(f"Expensive: {fcf_yield:.1%} FCF yield")
 
-    # Asset-light tilt: lower capex intensity preferred
-    if capex_vals and len(financial_line_items) >= 3:
-        revenue_vals = [getattr(li, "revenue", None) for li in financial_line_items]
-        capex_to_revenue = []
-        for i, li in enumerate(financial_line_items):
-            revenue = getattr(li, "revenue", None)
-            capex = abs(getattr(li, "capital_expenditure", 0) or 0)
-            if revenue and revenue > 0:
-                capex_to_revenue.append(capex / revenue)
-        if capex_to_revenue:
-            avg_ratio = sum(capex_to_revenue) / len(capex_to_revenue)
-            if avg_ratio < 0.05:
-                score += 2
-                details.append(f"Asset-light: Avg capex {avg_ratio:.1%} of revenue")
-            elif avg_ratio < 0.10:
-                score += 1
-                details.append(f"Moderate capex: Avg capex {avg_ratio:.1%} of revenue")
-            else:
-                details.append(f"Capex heavy: Avg capex {avg_ratio:.1%} of revenue")
+    capex_to_revenue = []
+    for li in financial_line_items:
+        revenue = li.revenue
+        capex = abs(li.capital_expenditure or 0) if li.capital_expenditure is not None else 0
+        if revenue and revenue > 0:
+            capex_to_revenue.append(capex / revenue)
+
+    if capex_to_revenue:
+        avg_ratio = sum(capex_to_revenue) / len(capex_to_revenue)
+        if avg_ratio < 0.05:
+            score += 2
+            details.append(f"Asset-light: Avg capex {avg_ratio:.1%} of revenue")
+        elif avg_ratio < 0.10:
+            score += 1
+            details.append(f"Moderate capex: Avg capex {avg_ratio:.1%} of revenue")
+        else:
+            details.append(f"Capex heavy: Avg capex {avg_ratio:.1%} of revenue")
 
     return {"score": min(10, score), "details": "; ".join(details), "fcf_yield": fcf_yield, "normalized_fcf": normalized_fcf}
 
 
 def analyze_double_potential(financial_line_items: list, market_cap: float | None) -> dict[str, any]:
-    """Estimate low-risk path to double capital in ~2-3 years: runway from FCF growth + rerating."""
     if not financial_line_items or market_cap is None or market_cap <= 0:
         return {"score": 0, "details": "Insufficient data"}
 
     details: list[str] = []
-
-    # Use revenue and FCF trends as rough growth proxy (keep it simple)
-    revenues = [getattr(li, "revenue", None) for li in financial_line_items if getattr(li, "revenue", None) is not None]
-    fcfs = [getattr(li, "free_cash_flow", None) for li in financial_line_items if getattr(li, "free_cash_flow", None) is not None]
+    revenues = [li.revenue for li in financial_line_items if li.revenue is not None]
+    fcfs = [li.free_cash_flow for li in financial_line_items if li.free_cash_flow is not None]
 
     score = 0
     if revenues and len(revenues) >= 3:
@@ -289,13 +303,12 @@ def analyze_double_potential(financial_line_items: list, market_cap: float | Non
                 score += 1
                 details.append(f"Positive FCF growth ({fcf_growth:.1%})")
 
-    # If FCF yield is already high (>8%), doubling can come from cash generation alone in few years
     tmp_val = analyze_pabrai_valuation(financial_line_items, market_cap)
     fcf_yield = tmp_val.get("fcf_yield")
     if fcf_yield is not None:
         if fcf_yield > 0.08:
             score += 3
-            details.append("High FCF yield can drive doubling via retained cash/Buybacks")
+            details.append("High FCF yield can drive doubling via retained cash/buybacks")
         elif fcf_yield > 0.05:
             score += 1
             details.append("Reasonable FCF yield supports moderate compounding")
@@ -308,44 +321,50 @@ def generate_pabrai_output(
     analysis_data: dict[str, any],
     state: AgentState,
     agent_id: str,
+    upstream_context: dict = None,
 ) -> MohnishPabraiSignal:
-    """Generate Pabrai-style decision focusing on low risk, high uncertainty bets and cloning."""
+
+    upstream_section = ""
+    if upstream_context:
+        upstream_section = "\n\nContext from upstream agents:\n"
+        for upstream_id, ctx in upstream_context.items():
+            upstream_section += f"{ctx.get('agent', upstream_id)}: {json.dumps(ctx, indent=2)}\n"
+        upstream_section += "\nIncorporate this context into your Pabrai-style checklist assessment.\n"
+
     template = ChatPromptTemplate.from_messages([
         (
-          "system",
-          """You are Mohnish Pabrai. Apply my value investing philosophy:
+            "system",
+            """You are Mohnish Pabrai. Apply my value investing philosophy:
+            - Heads I win; tails I don't lose much: prioritize downside protection first.
+            - Buy businesses with simple, understandable models and durable moats.
+            - Demand high free cash flow yields and low leverage; prefer asset-light models.
+            - Look for situations where intrinsic value is rising and price is significantly lower.
+            - Favor cloning great investors' ideas and checklists over novelty.
+            - Seek potential to double capital in 2-3 years with low risk.
+            - Avoid leverage, complexity, and fragile balance sheets.
 
-          - Heads I win; tails I don't lose much: prioritize downside protection first.
-          - Buy businesses with simple, understandable models and durable moats.
-          - Demand high free cash flow yields and low leverage; prefer asset-light models.
-          - Look for situations where intrinsic value is rising and price is significantly lower.
-          - Favor cloning great investors' ideas and checklists over novelty.
-          - Seek potential to double capital in 2-3 years with low risk.
-          - Avoid leverage, complexity, and fragile balance sheets.
-
-            Provide candid, checklist-driven reasoning, with emphasis on capital preservation and expected mispricing.
-            """,
+            Provide candid, checklist-driven reasoning with emphasis on capital preservation and expected mispricing.""",
         ),
         (
-          "human",
-          """Analyze {ticker} using the provided data.
+            "human",
+            """Analyze {ticker} using the provided data.
 
-          DATA:
-          {analysis_data}
-
-          Return EXACTLY this JSON:
-          {{
-            "signal": "bullish" | "bearish" | "neutral",
-            "confidence": float (0-100),
-            "reasoning": "string with Pabrai-style analysis focusing on downside protection, FCF yield, and doubling potential"
-          }}
-          """,
+DATA:
+{analysis_data}
+{upstream_context}
+Return EXACTLY this JSON:
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float (0-100),
+  "reasoning": "string with Pabrai-style analysis focusing on downside protection, FCF yield, and doubling potential"
+}}""",
         ),
     ])
 
     prompt = template.invoke({
         "analysis_data": json.dumps(analysis_data, indent=2),
         "ticker": ticker,
+        "upstream_context": upstream_section,
     })
 
     def create_default_pabrai_signal():
@@ -357,4 +376,4 @@ def generate_pabrai_output(
         pydantic_model=MohnishPabraiSignal,
         agent_name=agent_id,
         default_factory=create_default_pabrai_signal,
-    ) 
+    )

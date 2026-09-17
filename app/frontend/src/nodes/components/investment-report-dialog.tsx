@@ -168,7 +168,8 @@ export function InvestmentReportDialog({
                         <TableRow key={ticker}>
                           <TableCell className="font-medium">{ticker}</TableCell>
                           <TableCell>
-                            ${typeof currentPrice === 'number' ? currentPrice.toFixed(2) : currentPrice}
+                            {/* ${typeof currentPrice === 'number' ? currentPrice.toFixed(2) : currentPrice} */}
+                            ₹{typeof currentPrice === 'number' ? currentPrice.toFixed(2) : currentPrice}
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">

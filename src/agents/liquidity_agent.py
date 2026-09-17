@@ -16,39 +16,47 @@ from src.utils.api_key import get_api_key_from_state
 
 
 class LiquiditySignal(BaseModel):
-    """Schema returned by the LLM."""
-
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float  # 0–100
+    confidence: float
     reasoning: str
 
 
-def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
+def liquidity_agent(
+    state: AgentState,
+    agent_id: str = "liquidity_agent",
+    layer: int = 1,
+    is_last_hidden: bool = True,
+    upstream_agent_ids: list = None,
+):
     """
     Analyzes stocks using a comprehensive liquidity framework.
-    Focuses on volume metrics (daily volume, 30D avg volume), traded value,
-    Amihud illiquidity ratio, and impact cost proxy via high-low spread.
-    High liquidity reduces execution risk and signals institutional confidence.
-    Low liquidity stocks carry hidden transaction costs that erode returns.
+    Layer-aware: reads upstream context when in Layer 2+.
     """
     api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     data = state["data"]
     end_date: str = data["end_date"]
     tickers: list[str] = data["tickers"]
 
-    # 30D avg volume + Amihud needs at least 30 trading days (~45 calendar days)
-    # Use 90 calendar days to ensure sufficient trading days after weekends/holidays
     start_date = (
         datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=90)
     ).strftime("%Y-%m-%d")
 
     analysis_data: dict[str, dict] = {}
     liquidity_analysis: dict[str, dict] = {}
+    layer_context_updates: dict = {}
 
     for ticker in tickers:
-        # ------------------------------------------------------------------
-        # Fetch raw price + volume data
-        # ------------------------------------------------------------------
+        # ── Gather upstream context (Layer 2+) ───────────────────────────────
+        upstream_context: dict = {}
+        if layer > 1 and upstream_agent_ids:
+            lc = state.get("layer_context", {})
+            for upstream_id in upstream_agent_ids:
+                ctx_key = f"{upstream_id}:{ticker}"
+                if ctx_key in lc:
+                    upstream_context[upstream_id] = lc[ctx_key]
+            if upstream_context:
+                print(f"[{agent_id}] Layer {layer} — injecting context from: {list(upstream_context.keys())}")
+
         progress.update_status(agent_id, ticker, "Fetching price and volume data")
         prices = get_prices(ticker, start_date, end_date, api_key=api_key)
 
@@ -59,17 +67,16 @@ def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
                 "confidence": 0.0,
                 "reasoning": "Insufficient price history to compute liquidity metrics.",
             }
+            layer_context_updates[f"{agent_id}:{ticker}"] = {
+                "agent": agent_id, "ticker": ticker, "layer": layer,
+                "signal": "neutral", "confidence": 0.0,
+                "key_findings": ["Insufficient price history"],
+                "data_summary": "No liquidity data available.",
+            }
             continue
 
-        # Sort oldest → newest
-        sorted_prices = sorted(
-            prices,
-            key=lambda p: p.time if hasattr(p, "time") else p["time"]
-        )
+        sorted_prices = sorted(prices, key=lambda p: p.time if hasattr(p, "time") else p["time"])
 
-        # ------------------------------------------------------------------
-        # Run sub-analyses
-        # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Analyzing volume metrics")
         volume_analysis = _analyze_volume(sorted_prices)
 
@@ -82,16 +89,11 @@ def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
         progress.update_status(agent_id, ticker, "Analyzing impact cost proxy")
         impact_cost_analysis = _analyze_impact_cost(sorted_prices)
 
-        # ------------------------------------------------------------------
-        # Aggregate score
-        # Liquidity weights: Amihud and traded value are most informative;
-        # volume and impact cost confirm
-        # ------------------------------------------------------------------
         total_score = (
-            illiquidity_analysis["score"] * 0.35    # Amihud = truest liquidity signal
-            + traded_value_analysis["score"] * 0.30  # traded value = institutional accessibility
-            + volume_analysis["score"] * 0.20        # raw volume = market interest
-            + impact_cost_analysis["score"] * 0.15   # impact cost = execution risk
+            illiquidity_analysis["score"] * 0.35
+            + traded_value_analysis["score"] * 0.30
+            + volume_analysis["score"] * 0.20
+            + impact_cost_analysis["score"] * 0.15
         )
         max_score = 10
 
@@ -102,9 +104,6 @@ def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
         else:
             signal = "neutral"
 
-        # ------------------------------------------------------------------
-        # Collect for LLM
-        # ------------------------------------------------------------------
         analysis_data[ticker] = {
             "signal": signal,
             "score": total_score,
@@ -121,6 +120,7 @@ def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
             analysis_data=analysis_data,
             state=state,
             agent_id=agent_id,
+            upstream_context=upstream_context,
         )
 
         liquidity_analysis[ticker] = {
@@ -129,29 +129,45 @@ def liquidity_agent(state: AgentState, agent_id: str = "liquidity_agent"):
             "reasoning": liquidity_output.reasoning,
         }
 
+        # ── Build context JSON for downstream layers ──────────────────────────
+        layer_context_updates[f"{agent_id}:{ticker}"] = {
+            "agent": agent_id,
+            "ticker": ticker,
+            "layer": layer,
+            "signal": liquidity_output.signal,
+            "confidence": liquidity_output.confidence,
+            "key_findings": [
+                f"Liquidity score: {total_score:.1f}/{max_score}",
+                f"Amihud: {illiquidity_analysis.get('details', 'N/A')[:80]}",
+                f"Traded value: {traded_value_analysis.get('details', 'N/A')[:80]}",
+            ],
+            "data_summary": liquidity_output.reasoning[:300],
+        }
+
         progress.update_status(agent_id, ticker, "Done", analysis=liquidity_output.reasoning)
 
-    # ----------------------------------------------------------------------
-    # Return to graph
-    # ----------------------------------------------------------------------
     message = HumanMessage(content=json.dumps(liquidity_analysis), name=agent_id)
 
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(liquidity_analysis, "Liquidity Agent")
 
-    state["data"]["analyst_signals"][agent_id] = liquidity_analysis
+    if is_last_hidden:
+        state["data"]["analyst_signals"][agent_id] = liquidity_analysis
+    else:
+        print(f"[{agent_id}] Layer {layer} intermediate — writing to layer_context only")
 
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {
+        "messages": [message],
+        "data": state["data"],
+        "layer_context": layer_context_updates,
+    }
 
 
-###############################################################################
-# Sub-analysis helpers
-###############################################################################
+# ── Sub-analysis helpers (unchanged from original) ────────────────────────────
 
 def _safe_float(val) -> float | None:
-    """Safely convert a value to float."""
     try:
         return float(val) if val is not None else None
     except (TypeError, ValueError):
@@ -159,7 +175,6 @@ def _safe_float(val) -> float | None:
 
 
 def _get_field(price_obj, field: str):
-    """Get a field from a price object whether dict or Pydantic model."""
     if hasattr(price_obj, field):
         return getattr(price_obj, field)
     elif isinstance(price_obj, dict):
@@ -167,14 +182,7 @@ def _get_field(price_obj, field: str):
     return None
 
 
-# ----- Volume Metrics (Daily Volume, 30D Avg Volume) ------------------------
-
 def _analyze_volume(sorted_prices: list) -> dict:
-    """
-    Assess trading volume: latest daily volume vs 30D average.
-    Rising volume relative to average signals growing market interest.
-    Very low absolute volume flags liquidity risk regardless of trend.
-    """
     max_score = 4
     score = 0
     details: list[str] = []
@@ -183,28 +191,25 @@ def _analyze_volume(sorted_prices: list) -> dict:
     volumes = [v for v in volumes if v is not None and v > 0]
 
     if not volumes:
-        return {"score": 0, "max_score": max_score, "details": "Volume data unavailable",
-                "latest_volume": None, "avg_30d_volume": None}
+        return {"score": 0, "max_score": max_score, "details": "Volume data unavailable", "latest_volume": None, "avg_30d_volume": None}
 
     latest_volume = volumes[-1]
     avg_30d = sum(volumes[-30:]) / len(volumes[-30:]) if len(volumes) >= 5 else sum(volumes) / len(volumes)
 
-    # Score absolute 30D average volume — proxy for institutional accessibility
     if avg_30d >= 5_000_000:
         score += 2
-        details.append(f"High 30D avg volume: {avg_30d:,.0f} shares — strong institutional accessibility")
+        details.append(f"High 30D avg volume: {avg_30d:,.0f} shares")
     elif avg_30d >= 500_000:
         score += 1
         details.append(f"Moderate 30D avg volume: {avg_30d:,.0f} shares")
     else:
         details.append(f"Low 30D avg volume: {avg_30d:,.0f} shares — liquidity risk")
 
-    # Score latest volume relative to 30D average
     if avg_30d > 0:
         vol_ratio = latest_volume / avg_30d
         if vol_ratio >= 1.5:
             score += 2
-            details.append(f"Volume surge: {vol_ratio:.1f}x 30D average — elevated interest")
+            details.append(f"Volume surge: {vol_ratio:.1f}x 30D average")
         elif vol_ratio >= 0.8:
             score += 1
             details.append(f"Normal volume: {vol_ratio:.1f}x 30D average")
@@ -220,15 +225,7 @@ def _analyze_volume(sorted_prices: list) -> dict:
     }
 
 
-# ----- Traded Value Metrics (Daily Traded Value, 30D Avg Traded Value) ------
-
 def _analyze_traded_value(sorted_prices: list) -> dict:
-    """
-    Assess traded value: volume × close price.
-    Traded value in USD is the clearest measure of real liquidity —
-    it accounts for both volume and price level.
-    Institutional minimum is typically $10M+ daily traded value.
-    """
     max_score = 4
     score = 0
     details: list[str] = []
@@ -241,13 +238,11 @@ def _analyze_traded_value(sorted_prices: list) -> dict:
             traded_values.append(vol * close)
 
     if not traded_values:
-        return {"score": 0, "max_score": max_score, "details": "Traded value data unavailable",
-                "latest_traded_value": None, "avg_30d_traded_value": None}
+        return {"score": 0, "max_score": max_score, "details": "Traded value data unavailable", "latest_traded_value": None, "avg_30d_traded_value": None}
 
     latest_tv = traded_values[-1]
     avg_30d_tv = sum(traded_values[-30:]) / len(traded_values[-30:]) if len(traded_values) >= 5 else sum(traded_values) / len(traded_values)
 
-    # Score 30D average traded value — institutional threshold
     if avg_30d_tv >= 50_000_000:
         score += 2
         details.append(f"Excellent 30D avg traded value: ${avg_30d_tv / 1e6:.1f}M — institutional grade")
@@ -257,7 +252,6 @@ def _analyze_traded_value(sorted_prices: list) -> dict:
     else:
         details.append(f"Low 30D avg traded value: ${avg_30d_tv / 1e6:.2f}M — below institutional threshold")
 
-    # Score latest vs 30D average
     if avg_30d_tv > 0:
         tv_ratio = latest_tv / avg_30d_tv
         if tv_ratio >= 1.5:
@@ -278,15 +272,7 @@ def _analyze_traded_value(sorted_prices: list) -> dict:
     }
 
 
-# ----- Amihud Illiquidity ---------------------------------------------------
-
 def _analyze_amihud_illiquidity(sorted_prices: list) -> dict:
-    """
-    Compute Amihud (2002) illiquidity ratio: avg(|daily return| / daily traded value).
-    Lower values = more liquid.
-    This is the gold standard illiquidity measure used in academic finance.
-    Multiplied by 1e6 for readability (raw values are extremely small).
-    """
     max_score = 6
     score = 0
     details: list[str] = []
@@ -296,7 +282,6 @@ def _analyze_amihud_illiquidity(sorted_prices: list) -> dict:
         prev_close = _safe_float(_get_field(sorted_prices[i - 1], "close"))
         curr_close = _safe_float(_get_field(sorted_prices[i], "close"))
         vol = _safe_float(_get_field(sorted_prices[i], "volume"))
-
         if prev_close and curr_close and vol and prev_close > 0 and vol > 0:
             daily_return = abs((curr_close - prev_close) / prev_close)
             traded_value = curr_close * vol
@@ -304,27 +289,24 @@ def _analyze_amihud_illiquidity(sorted_prices: list) -> dict:
                 ratios.append(daily_return / traded_value)
 
     if not ratios:
-        return {"score": 0, "max_score": max_score,
-                "details": "Amihud illiquidity: insufficient data",
-                "amihud_ratio": None}
+        return {"score": 0, "max_score": max_score, "details": "Amihud illiquidity: insufficient data", "amihud_ratio": None}
 
-    amihud = (sum(ratios) / len(ratios)) * 1e6  # scale for readability
+    amihud = (sum(ratios) / len(ratios)) * 1e6
 
-    # Lower Amihud = more liquid = higher score
     if amihud < 0.01:
         score += 6
-        details.append(f"Exceptional liquidity — Amihud ratio: {amihud:.4f} (very low price impact)")
+        details.append(f"Exceptional liquidity — Amihud: {amihud:.4f}")
     elif amihud < 0.05:
         score += 5
-        details.append(f"High liquidity — Amihud ratio: {amihud:.4f}")
+        details.append(f"High liquidity — Amihud: {amihud:.4f}")
     elif amihud < 0.20:
         score += 3
-        details.append(f"Moderate liquidity — Amihud ratio: {amihud:.4f}")
+        details.append(f"Moderate liquidity — Amihud: {amihud:.4f}")
     elif amihud < 0.50:
         score += 1
-        details.append(f"Low liquidity — Amihud ratio: {amihud:.4f} — elevated price impact")
+        details.append(f"Low liquidity — Amihud: {amihud:.4f}")
     else:
-        details.append(f"Illiquid — Amihud ratio: {amihud:.4f} — significant market impact risk")
+        details.append(f"Illiquid — Amihud: {amihud:.4f} — significant market impact risk")
 
     return {
         "score": (score / max_score) * 10,
@@ -334,15 +316,7 @@ def _analyze_amihud_illiquidity(sorted_prices: list) -> dict:
     }
 
 
-# ----- Impact Cost Proxy (High-Low Spread × Volume Sensitivity) -------------
-
 def _analyze_impact_cost(sorted_prices: list) -> dict:
-    """
-    Estimate impact cost using high-low spread as a bid-ask proxy.
-    Formula: avg((high - low) / close) over last 30 days.
-    A tight high-low spread relative to price indicates low transaction costs.
-    Combined with volume, this approximates real-world execution slippage.
-    """
     max_score = 4
     score = 0
     details: list[str] = []
@@ -358,27 +332,24 @@ def _analyze_impact_cost(sorted_prices: list) -> dict:
             spreads.append((high - low) / close)
 
     if not spreads:
-        return {"score": 0, "max_score": max_score,
-                "details": "Impact cost proxy: insufficient data",
-                "avg_hl_spread_pct": None}
+        return {"score": 0, "max_score": max_score, "details": "Impact cost proxy: insufficient data", "avg_hl_spread_pct": None}
 
     avg_spread = sum(spreads) / len(spreads)
 
-    # Lower spread = lower impact cost = higher score
     if avg_spread < 0.01:
         score += 4
-        details.append(f"Tight high-low spread: {avg_spread:.2%} — minimal execution cost")
+        details.append(f"Tight spread: {avg_spread:.2%} — minimal execution cost")
     elif avg_spread < 0.02:
         score += 3
-        details.append(f"Narrow high-low spread: {avg_spread:.2%} — low execution cost")
+        details.append(f"Narrow spread: {avg_spread:.2%} — low execution cost")
     elif avg_spread < 0.04:
         score += 2
-        details.append(f"Moderate high-low spread: {avg_spread:.2%}")
+        details.append(f"Moderate spread: {avg_spread:.2%}")
     elif avg_spread < 0.07:
         score += 1
-        details.append(f"Wide high-low spread: {avg_spread:.2%} — elevated execution cost")
+        details.append(f"Wide spread: {avg_spread:.2%} — elevated execution cost")
     else:
-        details.append(f"Very wide high-low spread: {avg_spread:.2%} — high slippage risk")
+        details.append(f"Very wide spread: {avg_spread:.2%} — high slippage risk")
 
     return {
         "score": (score / max_score) * 10,
@@ -388,71 +359,62 @@ def _analyze_impact_cost(sorted_prices: list) -> dict:
     }
 
 
-###############################################################################
-# LLM generation
-###############################################################################
-
 def _generate_liquidity_output(
     ticker: str,
     analysis_data: dict,
     state: AgentState,
     agent_id: str,
+    upstream_context: dict = None,
 ) -> LiquiditySignal:
-    """Generate a liquidity-focused signal grounded strictly in the computed metrics."""
 
-    template = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a disciplined liquidity analyst. Your mandate:
-                - Liquidity is not just a risk filter — it is a signal of market confidence and institutional participation
-                - The Amihud illiquidity ratio is the most academically robust measure; weight it heavily
-                - Daily traded value above $10M is the minimum institutional threshold — below this, execution risk is real
-                - A volume surge relative to 30D average signals accumulation or distribution — context matters
-                - Wide high-low spreads indicate hidden transaction costs that erode stated returns
-                - Illiquid stocks may appear cheap but carry permanent execution risk — flag this clearly
+    upstream_section = ""
+    if upstream_context:
+        upstream_section = "\n\nContext from upstream agents:\n"
+        for upstream_id, ctx in upstream_context.items():
+            upstream_section += f"{ctx.get('agent', upstream_id)}: {json.dumps(ctx, indent=2)}\n"
+        upstream_section += "\nIncorporate this context into your liquidity assessment.\n"
 
-                When providing your reasoning, be specific by:
-                1. Leading with the Amihud illiquidity ratio — what does it say about price impact?
-                2. Citing 30D average traded value — is this institutionally accessible?
-                3. Commenting on volume trend — accumulation or distribution signals
-                4. Noting the high-low spread — what is the real cost to execute?
-                5. Concluding with a clear, liquidity-anchored stance
-                """,
-            ),
-            (
-                "human",
-                """Based on the following data, generate a liquidity signal for {ticker}:
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are a disciplined liquidity analyst. Your mandate:
+            - The Amihud illiquidity ratio is the most academically robust measure; weight it heavily
+            - Daily traded value above $10M is the minimum institutional threshold
+            - Volume surge vs 30D average signals accumulation or distribution
+            - Wide high-low spreads indicate hidden transaction costs
+            - Illiquid stocks carry permanent execution risk
 
-                Analysis Data:
-                {analysis_data}
+            Reasoning: Amihud ratio → traded value → volume trend → spread → verdict.""",
+        ),
+        (
+            "human",
+            """Based on the following data, generate a liquidity signal for {ticker}:
 
-                Return the trading signal in the following JSON format exactly:
-                {{
-                  "signal": "bullish" | "bearish" | "neutral",
-                  "confidence": float between 0 and 100,
-                  "reasoning": "string"
-                }}
-                """,
-            ),
-        ]
-    )
+Analysis Data:
+{analysis_data}
+{upstream_context}
+Return the trading signal in the following JSON format exactly:
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float between 0 and 100,
+  "reasoning": "string"
+}}""",
+        ),
+    ])
 
-    prompt = template.invoke(
-        {"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}
-    )
+    prompt = template.invoke({
+        "analysis_data": json.dumps(analysis_data, indent=2),
+        "ticker": ticker,
+        "upstream_context": upstream_section,
+    })
 
-    def create_default_liquidity_signal():
-        return LiquiditySignal(
-            signal="neutral",
-            confidence=0.0,
-            reasoning="Parsing error — defaulting to neutral",
-        )
+    def create_default():
+        return LiquiditySignal(signal="neutral", confidence=0.0, reasoning="Parsing error — defaulting to neutral")
 
     return call_llm(
         prompt=prompt,
         pydantic_model=LiquiditySignal,
         agent_name=agent_id,
         state=state,
-        default_factory=create_default_liquidity_signal,
+        default_factory=create_default,
     )

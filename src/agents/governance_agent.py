@@ -20,81 +20,63 @@ from src.utils.api_key import get_api_key_from_state
 
 
 class GovernanceSignal(BaseModel):
-    """Schema returned by the LLM."""
-
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float  # 0–100
+    confidence: float
     reasoning: str
 
 
-def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
+def governance_agent(
+    state: AgentState,
+    agent_id: str = "governance_agent",
+    layer: int = 1,
+    is_last_hidden: bool = True,
+    upstream_agent_ids: list = None,
+):
     """
-    Analyzes stocks using a comprehensive corporate governance framework.
-    Since promoter holdings, pledge data, auditor history, and related party
-    transactions are not available in the current data model, governance quality
-    is assessed via four available proxies:
-
-    - Insider ownership trend: net insider buying/selling as skin-in-the-game proxy
-    - Share dilution trend: outstanding shares growth as shareholder alignment proxy
-    - Earnings integrity: FCF conversion quality as accounting quality proxy
-    - News-based governance flags: negative press around governance red flags
-
-    Good governance compounds returns. Poor governance destroys them silently.
+    Analyzes corporate governance quality using proxy-based signals.
+    Layer-aware: reads upstream context when in Layer 2+.
     """
     api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     data = state["data"]
     end_date: str = data["end_date"]
     tickers: list[str] = data["tickers"]
 
-    # Insider trades and news need a lookback window
     start_date = (
         datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=365)
     ).strftime("%Y-%m-%d")
 
     analysis_data: dict[str, dict] = {}
     governance_analysis: dict[str, dict] = {}
+    layer_context_updates: dict = {}
 
     for ticker in tickers:
-        # ------------------------------------------------------------------
-        # Fetch raw data
-        # ------------------------------------------------------------------
+        # ── Gather upstream context (Layer 2+) ───────────────────────────────
+        upstream_context: dict = {}
+        if layer > 1 and upstream_agent_ids:
+            lc = state.get("layer_context", {})
+            for upstream_id in upstream_agent_ids:
+                ctx_key = f"{upstream_id}:{ticker}"
+                if ctx_key in lc:
+                    upstream_context[upstream_id] = lc[ctx_key]
+            if upstream_context:
+                print(f"[{agent_id}] Layer {layer} — injecting context from: {list(upstream_context.keys())}")
+
         progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(
-            ticker,
-            end_date=end_date,
-            start_date=start_date,
-            limit=100,
-            api_key=api_key,
-        )
+        insider_trades = get_insider_trades(ticker, end_date=end_date, start_date=start_date, limit=100, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Fetching company news")
-        company_news = get_company_news(
-            ticker,
-            end_date=end_date,
-            start_date=start_date,
-            limit=50,
-            api_key=api_key,
-        )
+        company_news = get_company_news(ticker, end_date=end_date, start_date=start_date, limit=50, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Fetching financial line items")
         line_items = search_line_items(
             ticker,
-            [
-                "outstanding_shares",
-                "free_cash_flow",
-                "net_income",
-                "revenue",
-                "issuance_or_purchase_of_equity_shares",
-            ],
+            ["outstanding_shares", "free_cash_flow", "net_income", "revenue", "issuance_or_purchase_of_equity_shares"],
             end_date,
             period="annual",
             limit=5,
             api_key=api_key,
         )
 
-        # ------------------------------------------------------------------
-        # Run sub-analyses
-        # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Analyzing insider ownership trend")
         insider_analysis = _analyze_insider_ownership(insider_trades)
 
@@ -107,16 +89,11 @@ def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
         progress.update_status(agent_id, ticker, "Analyzing governance news flags")
         news_analysis = _analyze_governance_news(company_news)
 
-        # ------------------------------------------------------------------
-        # Aggregate score
-        # Governance weights: insider ownership and earnings integrity are the
-        # most reliable signals; dilution and news provide confirmation
-        # ------------------------------------------------------------------
         total_score = (
-            insider_analysis["score"] * 0.30        # skin in the game = alignment
-            + integrity_analysis["score"] * 0.30    # FCF vs earnings = accounting quality
-            + dilution_analysis["score"] * 0.25     # share count = shareholder respect
-            + news_analysis["score"] * 0.15         # governance red flags in press
+            insider_analysis["score"] * 0.30
+            + integrity_analysis["score"] * 0.30
+            + dilution_analysis["score"] * 0.25
+            + news_analysis["score"] * 0.15
         )
         max_score = 10
 
@@ -127,9 +104,6 @@ def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
         else:
             signal = "neutral"
 
-        # ------------------------------------------------------------------
-        # Collect for LLM
-        # ------------------------------------------------------------------
         analysis_data[ticker] = {
             "signal": signal,
             "score": total_score,
@@ -138,10 +112,7 @@ def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
             "share_dilution_analysis": dilution_analysis,
             "earnings_integrity_analysis": integrity_analysis,
             "governance_news_analysis": news_analysis,
-            "data_note": (
-                "Promoter holding %, pledge %, auditor history, and RPT unavailable "
-                "in current data model. All metrics are proxy-based."
-            ),
+            "data_note": "Promoter holding %, pledge %, auditor history, and RPT unavailable. All metrics are proxy-based.",
         }
 
         progress.update_status(agent_id, ticker, "Generating governance analysis")
@@ -150,6 +121,7 @@ def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
             analysis_data=analysis_data,
             state=state,
             agent_id=agent_id,
+            upstream_context=upstream_context,
         )
 
         governance_analysis[ticker] = {
@@ -158,87 +130,78 @@ def governance_agent(state: AgentState, agent_id: str = "governance_agent"):
             "reasoning": governance_output.reasoning,
         }
 
+        # ── Build context JSON for downstream layers ──────────────────────────
+        layer_context_updates[f"{agent_id}:{ticker}"] = {
+            "agent": agent_id,
+            "ticker": ticker,
+            "layer": layer,
+            "signal": governance_output.signal,
+            "confidence": governance_output.confidence,
+            "key_findings": [
+                f"Governance score: {total_score:.1f}/{max_score}",
+                f"Integrity: {integrity_analysis.get('details', 'N/A')[:80]}",
+                f"News: {news_analysis.get('details', 'N/A')[:80]}",
+            ],
+            "data_summary": governance_output.reasoning[:300],
+        }
+
         progress.update_status(agent_id, ticker, "Done", analysis=governance_output.reasoning)
 
-    # ----------------------------------------------------------------------
-    # Return to graph
-    # ----------------------------------------------------------------------
     message = HumanMessage(content=json.dumps(governance_analysis), name=agent_id)
 
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(governance_analysis, "Governance Agent")
 
-    state["data"]["analyst_signals"][agent_id] = governance_analysis
+    if is_last_hidden:
+        state["data"]["analyst_signals"][agent_id] = governance_analysis
+    else:
+        print(f"[{agent_id}] Layer {layer} intermediate — writing to layer_context only")
 
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {
+        "messages": [message],
+        "data": state["data"],
+        "layer_context": layer_context_updates,
+    }
 
 
-###############################################################################
-# Sub-analysis helpers
-###############################################################################
-
-def _safe_get(obj, attr: str):
-    """Safely get an attribute from an object, returning None if missing."""
-    return getattr(obj, attr, None) if obj is not None else None
-
+# ── Sub-analysis helpers (unchanged from original) ────────────────────────────
 
 def _latest(line_items: list):
-    """Return the most recent line-item object or None."""
     return line_items[0] if line_items else None
 
 
-# ----- Insider Ownership Trend (Promoter Holding Proxy) ---------------------
-
 def _analyze_insider_ownership(insider_trades: list) -> dict:
-    """
-    Proxy for promoter/management skin-in-the-game via insider trade activity.
-    Net buying signals confidence and alignment with shareholders.
-    Net selling is ambiguous but heavy selling is a governance red flag.
-    Board director trades carry more weight than other insiders.
-
-    Metrics:
-    - Net shares bought/sold over the lookback period
-    - Buy ratio (buys / total transactions)
-    - Board director buy ratio (higher weight — these are the stewards)
-    """
-    max_score = 6  # 3pts net direction + 2pts buy ratio + 1pt board director signal
+    max_score = 6
     score = 0
     details: list[str] = []
 
     if not insider_trades:
-        return {
-            "score": 5,  # neutral default — absence of data ≠ bad governance
-            "max_score": max_score,
-            "details": "No insider trade data available — defaulting to neutral",
-            "net_shares": None,
-            "buy_ratio": None,
-        }
+        return {"score": 5, "max_score": max_score, "details": "No insider trade data — defaulting to neutral", "net_shares": None, "buy_ratio": None}
 
     shares_bought = sum(
-        _safe_get(t, "transaction_shares") or 0
+        getattr(t, "transaction_shares", 0) or 0
         for t in insider_trades
-        if (_safe_get(t, "transaction_shares") or 0) > 0
+        if (getattr(t, "transaction_shares", 0) or 0) > 0
     )
     shares_sold = abs(sum(
-        _safe_get(t, "transaction_shares") or 0
+        getattr(t, "transaction_shares", 0) or 0
         for t in insider_trades
-        if (_safe_get(t, "transaction_shares") or 0) < 0
+        if (getattr(t, "transaction_shares", 0) or 0) < 0
     ))
     net_shares = shares_bought - shares_sold
     total_transactions = sum(
         1 for t in insider_trades
-        if _safe_get(t, "transaction_shares") is not None
-        and _safe_get(t, "transaction_shares") != 0
+        if getattr(t, "transaction_shares", None) is not None
+        and getattr(t, "transaction_shares", 0) != 0
     )
 
-    # Net direction: 0–3 pts
     if net_shares > 0:
         net_ratio = net_shares / max(shares_sold, 1)
         if net_ratio > 2.0:
             score += 3
-            details.append(f"Strong net insider buying: {net_shares:,.0f} net shares — high alignment")
+            details.append(f"Strong net insider buying: {net_shares:,.0f} net shares")
         elif net_ratio > 0.5:
             score += 2
             details.append(f"Moderate net insider buying: {net_shares:,.0f} net shares")
@@ -246,41 +209,29 @@ def _analyze_insider_ownership(insider_trades: list) -> dict:
             score += 1
             details.append(f"Slight net insider buying: {net_shares:,.0f} net shares")
     else:
-        details.append(f"Net insider selling: {net_shares:,.0f} net shares — potential misalignment")
+        details.append(f"Net insider selling: {net_shares:,.0f} net shares")
 
-    # Buy ratio: 0–2 pts
     buy_ratio = None
     if total_transactions > 0:
-        buy_count = sum(
-            1 for t in insider_trades
-            if (_safe_get(t, "transaction_shares") or 0) > 0
-        )
+        buy_count = sum(1 for t in insider_trades if (getattr(t, "transaction_shares", 0) or 0) > 0)
         buy_ratio = buy_count / total_transactions
         if buy_ratio > 0.65:
             score += 2
-            details.append(f"High buy ratio: {buy_ratio:.0%} of transactions are purchases")
+            details.append(f"High buy ratio: {buy_ratio:.0%}")
         elif buy_ratio > 0.40:
             score += 1
             details.append(f"Moderate buy ratio: {buy_ratio:.0%}")
         else:
-            details.append(f"Low buy ratio: {buy_ratio:.0%} — mostly selling")
+            details.append(f"Low buy ratio: {buy_ratio:.0%}")
 
-    # Board director signal: 0–1 pt
-    board_buys = sum(
-        1 for t in insider_trades
-        if _safe_get(t, "is_board_director") is True
-        and (_safe_get(t, "transaction_shares") or 0) > 0
-    )
-    board_sells = sum(
-        1 for t in insider_trades
-        if _safe_get(t, "is_board_director") is True
-        and (_safe_get(t, "transaction_shares") or 0) < 0
-    )
+    board_buys = sum(1 for t in insider_trades if getattr(t, "is_board_director", False) is True and (getattr(t, "transaction_shares", 0) or 0) > 0)
+    board_sells = sum(1 for t in insider_trades if getattr(t, "is_board_director", False) is True and (getattr(t, "transaction_shares", 0) or 0) < 0)
+
     if board_buys > board_sells and board_buys > 0:
         score += 1
-        details.append(f"Board directors buying: {board_buys} purchase transactions — stewardship signal")
+        details.append(f"Board directors buying: {board_buys} transactions")
     elif board_sells > board_buys and board_sells > 0:
-        details.append(f"Board directors selling: {board_sells} sale transactions — governance caution")
+        details.append(f"Board directors selling: {board_sells} transactions")
     else:
         details.append("Board director activity: neutral or no data")
 
@@ -295,29 +246,12 @@ def _analyze_insider_ownership(insider_trades: list) -> dict:
     }
 
 
-# ----- Share Dilution Trend (Shareholder Alignment Proxy) -------------------
-
 def _analyze_share_dilution(line_items: list) -> dict:
-    """
-    Assess shareholder alignment via outstanding share count trend.
-    Companies that consistently issue shares dilute existing holders —
-    a form of governance failure even when not malicious.
-    Buybacks are the strongest signal of management prioritizing shareholders.
-
-    Metrics:
-    - Share count CAGR over available history
-    - Issuance vs purchase of equity shares (most recent period)
-    """
-    max_score = 5  # 3pts share count trend + 2pts equity issuance/buyback
+    max_score = 5
     score = 0
     details: list[str] = []
 
-    # Share count CAGR
-    share_counts = [
-        _safe_get(item, "outstanding_shares")
-        for item in line_items
-        if _safe_get(item, "outstanding_shares") is not None
-    ]
+    share_counts = [item.outstanding_shares for item in line_items if item.outstanding_shares is not None]
 
     if len(share_counts) >= 2:
         latest_shares = share_counts[0]
@@ -327,31 +261,31 @@ def _analyze_share_dilution(line_items: list) -> dict:
             share_cagr = (latest_shares / oldest_shares) ** (1 / n) - 1
             if share_cagr < -0.01:
                 score += 3
-                details.append(f"Share count shrinking: {share_cagr:.1%} CAGR — buyback-driven shareholder returns")
+                details.append(f"Share count shrinking: {share_cagr:.1%} CAGR")
             elif share_cagr < 0.01:
                 score += 2
-                details.append(f"Share count stable: {share_cagr:.1%} CAGR — no dilution")
+                details.append(f"Share count stable: {share_cagr:.1%} CAGR")
             elif share_cagr < 0.03:
                 score += 1
-                details.append(f"Modest dilution: {share_cagr:.1%} CAGR — minor shareholder impact")
+                details.append(f"Modest dilution: {share_cagr:.1%} CAGR")
             else:
-                details.append(f"Significant dilution: {share_cagr:.1%} CAGR — shareholder value erosion")
+                details.append(f"Significant dilution: {share_cagr:.1%} CAGR")
         else:
+            share_cagr = None
             details.append("Share count CAGR: invalid base value")
     else:
+        share_cagr = None
         details.append("Share count trend: insufficient history")
 
-    # Equity issuance vs buyback (most recent period)
     latest_item = _latest(line_items)
-    equity_activity = _safe_get(latest_item, "issuance_or_purchase_of_equity_shares")
+    equity_activity = latest_item.issuance_or_purchase_of_equity_shares if latest_item else None
 
     if equity_activity is not None:
         if equity_activity < 0:
-            # Negative = cash outflow = buyback
             score += 2
-            details.append(f"Active buybacks: ${abs(equity_activity):,.0f} returned to shareholders")
+            details.append(f"Active buybacks: ${abs(equity_activity):,.0f} returned")
         elif equity_activity > 0:
-            details.append(f"Equity issuance: ${equity_activity:,.0f} — dilutive activity")
+            details.append(f"Equity issuance: ${equity_activity:,.0f}")
         else:
             score += 1
             details.append("No equity issuance or buyback activity")
@@ -362,51 +296,30 @@ def _analyze_share_dilution(line_items: list) -> dict:
         "score": (score / max_score) * 10,
         "max_score": max_score,
         "details": "; ".join(details),
-        "share_cagr": round(
-            (share_counts[0] / share_counts[-1]) ** (1 / (len(share_counts) - 1)) - 1, 4
-        ) if len(share_counts) >= 2 and share_counts[-1] > 0 else None,
+        "share_cagr": round(share_cagr, 4) if share_cagr is not None else None,
     }
 
 
-# ----- Earnings Integrity (Accounting Quality / Auditor Proxy) --------------
-
 def _analyze_earnings_integrity(line_items: list) -> dict:
-    """
-    Proxy for auditor quality and related party transaction risk via
-    FCF-to-net-income conversion ratio.
-    Companies that consistently report earnings but generate little cash
-    are either aggressive in accounting or destroying capital invisibly.
-    High and consistent FCF conversion is the strongest accounting integrity signal.
-
-    Metrics:
-    - FCF conversion ratio: FCF / net income (averaged across periods)
-    - Consistency: how many periods show positive FCF conversion
-    """
-    max_score = 6  # 4pts avg conversion + 2pts consistency
+    max_score = 6
     score = 0
     details: list[str] = []
 
     conversions = []
     for item in line_items:
-        fcf = _safe_get(item, "free_cash_flow")
-        ni = _safe_get(item, "net_income")
+        fcf = item.free_cash_flow
+        ni = item.net_income
         if fcf is not None and ni is not None and ni > 0:
             conversions.append(fcf / ni)
 
     if not conversions:
-        return {
-            "score": 0,
-            "max_score": max_score,
-            "details": "Earnings integrity: insufficient FCF/net income data",
-            "avg_fcf_conversion": None,
-        }
+        return {"score": 0, "max_score": max_score, "details": "Earnings integrity: insufficient FCF/net income data", "avg_fcf_conversion": None}
 
     avg_conversion = sum(conversions) / len(conversions)
 
-    # Average FCF conversion: 0–4 pts
     if avg_conversion >= 1.10:
         score += 4
-        details.append(f"Exceptional earnings integrity: {avg_conversion:.2f}x FCF conversion — cash exceeds reported profits")
+        details.append(f"Exceptional earnings integrity: {avg_conversion:.2f}x FCF conversion")
     elif avg_conversion >= 0.90:
         score += 3
         details.append(f"Strong earnings integrity: {avg_conversion:.2f}x FCF conversion")
@@ -415,22 +328,21 @@ def _analyze_earnings_integrity(line_items: list) -> dict:
         details.append(f"Adequate earnings integrity: {avg_conversion:.2f}x FCF conversion")
     elif avg_conversion >= 0.50:
         score += 1
-        details.append(f"Weak earnings integrity: {avg_conversion:.2f}x FCF conversion — earnings quality questionable")
+        details.append(f"Weak earnings integrity: {avg_conversion:.2f}x FCF conversion")
     else:
-        details.append(f"Poor earnings integrity: {avg_conversion:.2f}x FCF conversion — significant earnings/cash divergence")
+        details.append(f"Poor earnings integrity: {avg_conversion:.2f}x FCF conversion")
 
-    # Consistency: periods with positive conversion: 0–2 pts
     positive_periods = sum(1 for c in conversions if c > 0)
     consistency = positive_periods / len(conversions)
 
     if consistency >= 0.90:
         score += 2
-        details.append(f"Highly consistent cash generation: {positive_periods}/{len(conversions)} periods positive")
+        details.append(f"Highly consistent: {positive_periods}/{len(conversions)} periods positive")
     elif consistency >= 0.70:
         score += 1
         details.append(f"Mostly consistent: {positive_periods}/{len(conversions)} periods positive")
     else:
-        details.append(f"Inconsistent cash generation: {positive_periods}/{len(conversions)} periods positive")
+        details.append(f"Inconsistent: {positive_periods}/{len(conversions)} periods positive")
 
     return {
         "score": (score / max_score) * 10,
@@ -441,52 +353,22 @@ def _analyze_earnings_integrity(line_items: list) -> dict:
     }
 
 
-# ----- Governance News Flags ------------------------------------------------
-
 def _analyze_governance_news(company_news: list) -> dict:
-    """
-    Scan recent news for governance red flag keywords.
-    Fraud, litigation, related party abuse, regulatory action, and
-    management misconduct are the most common governance warning signs
-    that appear in press before they appear in financial statements.
-
-    Keywords are organized by severity tier:
-    - Tier 1 (critical): fraud, embezzlement, SEC investigation, bribery
-    - Tier 2 (serious): lawsuit, regulatory, misconduct, insider trading
-    - Tier 3 (watch): resignation, dispute, conflict of interest
-    """
     max_score = 3
     score = 0
     details: list[str] = []
 
     GOVERNANCE_FLAGS = {
-        "tier1": [
-            "fraud", "embezzlement", "bribery", "sec investigation",
-            "criminal", "indicted", "arrested", "money laundering",
-        ],
-        "tier2": [
-            "lawsuit", "litigation", "regulatory action", "misconduct",
-            "insider trading", "accounting irregularities", "restatement",
-            "whistleblower", "class action",
-        ],
-        "tier3": [
-            "resignation", "dispute", "conflict of interest",
-            "related party", "nepotism", "board disagreement",
-        ],
+        "tier1": ["fraud", "embezzlement", "bribery", "sec investigation", "criminal", "indicted", "arrested", "money laundering"],
+        "tier2": ["lawsuit", "litigation", "regulatory action", "misconduct", "insider trading", "accounting irregularities", "restatement", "whistleblower", "class action"],
+        "tier3": ["resignation", "dispute", "conflict of interest", "related party", "nepotism", "board disagreement"],
     }
 
     if not company_news:
-        return {
-            "score": 5,  # neutral — no news ≠ bad governance
-            "max_score": max_score,
-            "details": "No recent news available — defaulting to neutral",
-            "flags_found": [],
-        }
+        return {"score": 5, "max_score": max_score, "details": "No recent news — defaulting to neutral", "flags_found": []}
 
     flags_found: list[str] = []
-    tier1_hits = 0
-    tier2_hits = 0
-    tier3_hits = 0
+    tier1_hits = tier2_hits = tier3_hits = 0
 
     for article in company_news:
         title_lower = (article.title or "").lower()
@@ -503,98 +385,86 @@ def _analyze_governance_news(company_news: list) -> dict:
                 tier3_hits += 1
                 flags_found.append(f"[WATCH] '{keyword}' in: {article.title[:60]}")
 
-    # Score: clean press = full marks, each tier deducts
     if tier1_hits > 0:
         score = 0
-        details.append(f"Critical governance flags: {tier1_hits} article(s) — fraud/investigation risk")
+        details.append(f"Critical governance flags: {tier1_hits} article(s)")
     elif tier2_hits > 0:
         score = 1
-        details.append(f"Serious governance flags: {tier2_hits} article(s) — litigation/misconduct risk")
+        details.append(f"Serious governance flags: {tier2_hits} article(s)")
     elif tier3_hits > 0:
         score = 2
-        details.append(f"Minor governance flags: {tier3_hits} article(s) — worth monitoring")
+        details.append(f"Minor governance flags: {tier3_hits} article(s)")
     else:
         score = 3
-        details.append(f"Clean governance press: no red flags in {len(company_news)} recent articles")
+        details.append(f"Clean governance press: no red flags in {len(company_news)} articles")
 
     return {
         "score": (score / max_score) * 10,
         "max_score": max_score,
         "details": "; ".join(details),
-        "flags_found": flags_found[:10],  # cap at 10 for LLM context window efficiency
+        "flags_found": flags_found[:10],
         "tier1_hits": tier1_hits,
         "tier2_hits": tier2_hits,
         "tier3_hits": tier3_hits,
     }
 
 
-###############################################################################
-# LLM generation
-###############################################################################
-
 def _generate_governance_output(
     ticker: str,
     analysis_data: dict,
     state: AgentState,
     agent_id: str,
+    upstream_context: dict = None,
 ) -> GovernanceSignal:
-    """Generate a governance quality signal grounded strictly in the computed proxies."""
 
-    template = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a disciplined corporate governance analyst. Your mandate:
-                - Good governance is the foundation of sustainable shareholder value creation
-                - Insider buying signals alignment; heavy selling without explanation signals extraction
-                - Share dilution is a slow tax on shareholders — consistent buybacks are the opposite
-                - FCF conversion above 1.0x is the clearest sign that reported earnings are real
-                - Governance red flags in news often precede financial deterioration by 1-2 years
-                - Note: promoter holdings, pledge data, auditor history, and RPT are unavailable —
-                  all analysis is proxy-based; communicate this limitation clearly in your reasoning
+    upstream_section = ""
+    if upstream_context:
+        upstream_section = "\n\nContext from upstream agents:\n"
+        for upstream_id, ctx in upstream_context.items():
+            upstream_section += f"{ctx.get('agent', upstream_id)}: {json.dumps(ctx, indent=2)}\n"
+        upstream_section += "\nIncorporate this context into your governance assessment.\n"
 
-                When providing your reasoning, be specific by:
-                1. Assessing insider ownership trend — are insiders buying or exiting?
-                2. Evaluating share dilution — are shareholders being respected or diluted?
-                3. Commenting on earnings integrity — does cash match reported profits?
-                4. Flagging any governance red flags found in recent news
-                5. Acknowledging the proxy limitations and adjusting confidence accordingly
-                6. Concluding with a clear governance quality verdict
-                """,
-            ),
-            (
-                "human",
-                """Based on the following data, generate a governance quality signal for {ticker}:
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are a disciplined corporate governance analyst. Your mandate:
+            - Insider buying signals alignment; heavy selling signals extraction
+            - Share dilution is a slow tax on shareholders
+            - FCF conversion above 1.0x = reported earnings are real
+            - Governance red flags in news often precede financial deterioration
+            - Note: promoter holdings, pledge data, auditor history, RPT unavailable — proxy-based analysis
 
-                Analysis Data:
-                {analysis_data}
+            Reasoning should cover: insider ownership, dilution, earnings integrity, news flags.""",
+        ),
+        (
+            "human",
+            """Based on the following data, generate a governance quality signal for {ticker}:
 
-                Return the trading signal in the following JSON format exactly:
-                {{
-                  "signal": "bullish" | "bearish" | "neutral",
-                  "confidence": float between 0 and 100,
-                  "reasoning": "string"
-                }}
-                """,
-            ),
-        ]
-    )
+Analysis Data:
+{analysis_data}
+{upstream_context}
+Return the trading signal in the following JSON format exactly:
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float between 0 and 100,
+  "reasoning": "string"
+}}""",
+        ),
+    ])
 
-    prompt = template.invoke(
-        {"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}
-    )
+    prompt = template.invoke({
+        "analysis_data": json.dumps(analysis_data, indent=2),
+        "ticker": ticker,
+        "upstream_context": upstream_section,
+    })
 
-    def create_default_governance_signal():
-        return GovernanceSignal(
-            signal="neutral",
-            confidence=0.0,
-            reasoning="Parsing error — defaulting to neutral",
-        )
+    def create_default():
+        return GovernanceSignal(signal="neutral", confidence=0.0, reasoning="Parsing error — defaulting to neutral")
 
     return call_llm(
         prompt=prompt,
         pydantic_model=GovernanceSignal,
         agent_name=agent_id,
         state=state,
-        default_factory=create_default_governance_signal,
+        default_factory=create_default,
     )

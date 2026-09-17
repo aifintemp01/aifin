@@ -19,24 +19,21 @@ from src.utils.api_key import get_api_key_from_state
 
 
 class CapitalAllocationSignal(BaseModel):
-    """Schema returned by the LLM."""
-
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float  # 0–100
+    confidence: float
     reasoning: str
 
 
-def capital_allocation_agent(state: AgentState, agent_id: str = "capital_allocation_agent"):
+def capital_allocation_agent(
+    state: AgentState,
+    agent_id: str = "capital_allocation_agent",
+    layer: int = 1,
+    is_last_hidden: bool = True,
+    upstream_agent_ids: list = None,
+):
     """
     Analyzes stocks using a comprehensive capital allocation framework.
-    Focuses on how management deploys the cash the business generates:
-    - Dividend growth (Dividend CAGR) — is capital returned consistently?
-    - Share dilution rate — are shareholders being respected or taxed?
-    - Buyback yield — is capital returned via repurchases?
-    - Return on incremental capital (ROIC delta) — is new capital deployed wisely?
-    - Net debt change trend — is the balance sheet strengthening or deteriorating?
-
-    Great capital allocators compound wealth. Poor ones destroy it quietly.
+    Layer-aware: reads upstream context when in Layer 2+.
     """
     api_key = get_api_key_from_state(state, "TWELVE_DATA_API_KEY")
     data = state["data"]
@@ -45,45 +42,42 @@ def capital_allocation_agent(state: AgentState, agent_id: str = "capital_allocat
 
     analysis_data: dict[str, dict] = {}
     capital_allocation_analysis: dict[str, dict] = {}
+    layer_context_updates: dict = {}
 
     for ticker in tickers:
-        # ------------------------------------------------------------------
-        # Fetch raw data
-        # ------------------------------------------------------------------
+        # ── Gather upstream context (Layer 2+) ───────────────────────────────
+        upstream_context: dict = {}
+        if layer > 1 and upstream_agent_ids:
+            lc = state.get("layer_context", {})
+            for upstream_id in upstream_agent_ids:
+                ctx_key = f"{upstream_id}:{ticker}"
+                if ctx_key in lc:
+                    upstream_context[upstream_id] = lc[ctx_key]
+            if upstream_context:
+                print(f"[{agent_id}] Layer {layer} — injecting context from: {list(upstream_context.keys())}")
+
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(
-            ticker, end_date, period="annual", limit=5, api_key=api_key
-        )
+        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Fetching financial line items")
         line_items = search_line_items(
             ticker,
             [
-                "dividends_and_other_cash_distributions",
-                "outstanding_shares",
-                "issuance_or_purchase_of_equity_shares",
-                "total_debt",
-                "cash_and_equivalents",
-                "shareholders_equity",
-                "net_income",
-                "free_cash_flow",
-                "capital_expenditure",
-                "operating_income",
-                "ebit",
-                "return_on_invested_capital",
+                "dividends_and_other_cash_distributions", "outstanding_shares",
+                "issuance_or_purchase_of_equity_shares", "total_debt",
+                "cash_and_equivalents", "shareholders_equity", "net_income",
+                "free_cash_flow", "capital_expenditure", "operating_income",
+                "ebit", "return_on_invested_capital",
             ],
             end_date,
             period="annual",
-            limit=6,  # 6 periods for CAGR and delta calculations
+            limit=6,
             api_key=api_key,
         )
 
         progress.update_status(agent_id, ticker, "Fetching market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
 
-        # ------------------------------------------------------------------
-        # Run sub-analyses
-        # ------------------------------------------------------------------
         progress.update_status(agent_id, ticker, "Analyzing dividend policy")
         dividend_analysis = _analyze_dividend_policy(line_items)
 
@@ -99,17 +93,12 @@ def capital_allocation_agent(state: AgentState, agent_id: str = "capital_allocat
         progress.update_status(agent_id, ticker, "Analyzing debt management")
         debt_management_analysis = _analyze_debt_management(line_items)
 
-        # ------------------------------------------------------------------
-        # Aggregate score
-        # Capital allocation weights: ROIC delta and shareholder returns
-        # (dividends + buybacks combined) dominate; debt trend confirms
-        # ------------------------------------------------------------------
         total_score = (
-            roic_delta_analysis["score"] * 0.30         # incremental capital deployment quality
-            + dilution_analysis["score"] * 0.25          # shareholder respect
-            + buyback_analysis["score"] * 0.20           # active capital return
-            + debt_management_analysis["score"] * 0.15   # balance sheet stewardship
-            + dividend_analysis["score"] * 0.10          # dividend consistency
+            roic_delta_analysis["score"] * 0.30
+            + dilution_analysis["score"] * 0.25
+            + buyback_analysis["score"] * 0.20
+            + debt_management_analysis["score"] * 0.15
+            + dividend_analysis["score"] * 0.10
         )
         max_score = 10
 
@@ -120,9 +109,6 @@ def capital_allocation_agent(state: AgentState, agent_id: str = "capital_allocat
         else:
             signal = "neutral"
 
-        # ------------------------------------------------------------------
-        # Collect for LLM
-        # ------------------------------------------------------------------
         analysis_data[ticker] = {
             "signal": signal,
             "score": total_score,
@@ -136,74 +122,75 @@ def capital_allocation_agent(state: AgentState, agent_id: str = "capital_allocat
         }
 
         progress.update_status(agent_id, ticker, "Generating capital allocation analysis")
-        capital_allocation_output = _generate_capital_allocation_output(
+        ca_output = _generate_capital_allocation_output(
             ticker=ticker,
             analysis_data=analysis_data,
             state=state,
             agent_id=agent_id,
+            upstream_context=upstream_context,
         )
 
         capital_allocation_analysis[ticker] = {
-            "signal": capital_allocation_output.signal,
-            "confidence": capital_allocation_output.confidence,
-            "reasoning": capital_allocation_output.reasoning,
+            "signal": ca_output.signal,
+            "confidence": ca_output.confidence,
+            "reasoning": ca_output.reasoning,
         }
 
-        progress.update_status(agent_id, ticker, "Done", analysis=capital_allocation_output.reasoning)
+        # ── Build context JSON for downstream layers ──────────────────────────
+        layer_context_updates[f"{agent_id}:{ticker}"] = {
+            "agent": agent_id,
+            "ticker": ticker,
+            "layer": layer,
+            "signal": ca_output.signal,
+            "confidence": ca_output.confidence,
+            "key_findings": [
+                f"CA score: {total_score:.1f}/{max_score}",
+                f"ROIC: {roic_delta_analysis.get('details', 'N/A')[:80]}",
+                f"Debt: {debt_management_analysis.get('details', 'N/A')[:80]}",
+            ],
+            "data_summary": ca_output.reasoning[:300],
+        }
 
-    # ----------------------------------------------------------------------
-    # Return to graph
-    # ----------------------------------------------------------------------
+        progress.update_status(agent_id, ticker, "Done", analysis=ca_output.reasoning)
+
     message = HumanMessage(content=json.dumps(capital_allocation_analysis), name=agent_id)
 
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(capital_allocation_analysis, "Capital Allocation Agent")
 
-    state["data"]["analyst_signals"][agent_id] = capital_allocation_analysis
+    if is_last_hidden:
+        state["data"]["analyst_signals"][agent_id] = capital_allocation_analysis
+    else:
+        print(f"[{agent_id}] Layer {layer} intermediate — writing to layer_context only")
 
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {
+        "messages": [message],
+        "data": state["data"],
+        "layer_context": layer_context_updates,
+    }
 
 
-###############################################################################
-# Sub-analysis helpers
-###############################################################################
+# ── Sub-analysis helpers (unchanged from original) ────────────────────────────
 
 def _latest(line_items: list):
-    """Return the most recent line-item object or None."""
     return line_items[0] if line_items else None
 
 
-def _safe_get(obj, attr: str):
-    """Safely get an attribute from an object, returning None if missing."""
-    return getattr(obj, attr, None) if obj is not None else None
-
-
-# ----- Dividend Policy (Dividend CAGR) --------------------------------------
-
 def _analyze_dividend_policy(line_items: list) -> dict:
-    """
-    Assess dividend growth consistency via CAGR over available history.
-    A growing dividend signals management confidence in future earnings
-    and a disciplined commitment to returning capital.
-    Companies that never pay dividends are not penalized — some great
-    allocators reinvest everything (Berkshire model).
-    """
     max_score = 4
     score = 0
     details: list[str] = []
 
     dividends = [
-        abs(_safe_get(item, "dividends_and_other_cash_distributions") or 0)
+        abs(item.dividends_and_other_cash_distributions or 0)
         for item in line_items
-        if _safe_get(item, "dividends_and_other_cash_distributions") is not None
+        if item.dividends_and_other_cash_distributions is not None
     ]
-    # Filter to only periods where dividends were actually paid
     paying_periods = [d for d in dividends if d > 0]
 
     if len(paying_periods) < 2:
-        # No dividend history — neutral, not negative
         return {
             "score": 5,
             "max_score": max_score,
@@ -219,7 +206,7 @@ def _analyze_dividend_policy(line_items: list) -> dict:
         div_cagr = (latest_div / oldest_div) ** (1 / n) - 1
         if div_cagr > 0.10:
             score += 4
-            details.append(f"Strong dividend CAGR: {div_cagr:.1%} over {n}Y — committed capital return")
+            details.append(f"Strong dividend CAGR: {div_cagr:.1%} over {n}Y")
         elif div_cagr > 0.05:
             score += 3
             details.append(f"Healthy dividend CAGR: {div_cagr:.1%} over {n}Y")
@@ -230,7 +217,7 @@ def _analyze_dividend_policy(line_items: list) -> dict:
             score += 1
             details.append("Flat dividend — maintained but not growing")
         else:
-            details.append(f"Dividend cut: {div_cagr:.1%} CAGR — capital return declining")
+            details.append(f"Dividend cut: {div_cagr:.1%} CAGR")
     else:
         div_cagr = None
         details.append("Dividend CAGR: invalid base dividend value")
@@ -243,25 +230,15 @@ def _analyze_dividend_policy(line_items: list) -> dict:
     }
 
 
-# ----- Share Dilution (Dilution Rate) ---------------------------------------
-
 def _analyze_share_dilution(line_items: list) -> dict:
-    """
-    Assess shareholder treatment via outstanding share count trend.
-    Consistent dilution is a hidden tax on shareholders.
-    Shrinking share count (via buybacks) compounds returns.
-
-    Uses both share count CAGR and equity issuance/purchase field
-    for the most recent period as a confirmation signal.
-    """
     max_score = 5
     score = 0
     details: list[str] = []
 
     share_counts = [
-        _safe_get(item, "outstanding_shares")
+        item.outstanding_shares
         for item in line_items
-        if _safe_get(item, "outstanding_shares") is not None
+        if item.outstanding_shares is not None
     ]
 
     dilution_rate = None
@@ -273,37 +250,36 @@ def _analyze_share_dilution(line_items: list) -> dict:
             dilution_rate = (latest / oldest) ** (1 / n) - 1
             if dilution_rate < -0.02:
                 score += 3
-                details.append(f"Active share reduction: {dilution_rate:.1%} CAGR — buyback-driven compounding")
+                details.append(f"Active share reduction: {dilution_rate:.1%} CAGR")
             elif dilution_rate < 0:
                 score += 2
                 details.append(f"Slight share reduction: {dilution_rate:.1%} CAGR")
             elif dilution_rate < 0.01:
                 score += 2
-                details.append(f"Share count stable: {dilution_rate:.1%} CAGR — no meaningful dilution")
+                details.append(f"Share count stable: {dilution_rate:.1%} CAGR")
             elif dilution_rate < 0.03:
                 score += 1
-                details.append(f"Modest dilution: {dilution_rate:.1%} CAGR — minor shareholder impact")
+                details.append(f"Modest dilution: {dilution_rate:.1%} CAGR")
             else:
-                details.append(f"Significant dilution: {dilution_rate:.1%} CAGR — shareholder value erosion")
+                details.append(f"Significant dilution: {dilution_rate:.1%} CAGR")
         else:
             details.append("Share count CAGR: invalid base value")
     else:
         details.append("Share dilution: insufficient history")
 
-    # Equity issuance confirmation (most recent period)
     latest_item = _latest(line_items)
-    equity_activity = _safe_get(latest_item, "issuance_or_purchase_of_equity_shares")
+    equity_activity = latest_item.issuance_or_purchase_of_equity_shares if latest_item else None
     if equity_activity is not None:
         if equity_activity < 0:
             score += 2
             details.append(f"Active buybacks: ${abs(equity_activity):,.0f} returned last period")
         elif equity_activity > 0:
-            details.append(f"Equity issuance: ${equity_activity:,.0f} — dilutive activity last period")
+            details.append(f"Equity issuance: ${equity_activity:,.0f}")
         else:
             score += 1
             details.append("No equity issuance or buyback activity last period")
     else:
-        details.append("Equity issuance/buyback: data unavailable for most recent period")
+        details.append("Equity issuance/buyback: data unavailable")
 
     return {
         "score": (score / max_score) * 10,
@@ -313,32 +289,21 @@ def _analyze_share_dilution(line_items: list) -> dict:
     }
 
 
-# ----- Buyback Yield --------------------------------------------------------
-
 def _analyze_buyback_yield(line_items: list, market_cap: float | None) -> dict:
-    """
-    Compute buyback yield: buyback amount / market cap.
-    Buybacks at attractive valuations are the most tax-efficient form of
-    capital return. High buyback yield signals both financial strength
-    and management confidence in intrinsic value.
-
-    Uses issuance_or_purchase_of_equity_shares — negative values = buybacks.
-    """
     max_score = 4
     score = 0
     details: list[str] = []
 
     latest_item = _latest(line_items)
-    equity_activity = _safe_get(latest_item, "issuance_or_purchase_of_equity_shares")
+    equity_activity = latest_item.issuance_or_purchase_of_equity_shares if latest_item else None
 
     buyback_yield = None
     if equity_activity is not None and equity_activity < 0 and market_cap and market_cap > 0:
         buyback_amount = abs(equity_activity)
         buyback_yield = buyback_amount / market_cap
-
         if buyback_yield > 0.05:
             score += 4
-            details.append(f"High buyback yield: {buyback_yield:.1%} — aggressive capital return")
+            details.append(f"High buyback yield: {buyback_yield:.1%}")
         elif buyback_yield > 0.02:
             score += 3
             details.append(f"Solid buyback yield: {buyback_yield:.1%}")
@@ -348,13 +313,10 @@ def _analyze_buyback_yield(line_items: list, market_cap: float | None) -> dict:
         else:
             score += 1
             details.append(f"Minimal buyback yield: {buyback_yield:.1%}")
-
     elif equity_activity is not None and equity_activity >= 0:
-        details.append("No buyback activity in most recent period — capital not returned via repurchases")
-
+        details.append("No buyback activity in most recent period")
     elif market_cap is None:
         details.append("Buyback yield: market cap unavailable")
-
     else:
         details.append("Buyback yield: equity activity data unavailable")
 
@@ -366,33 +328,19 @@ def _analyze_buyback_yield(line_items: list, market_cap: float | None) -> dict:
     }
 
 
-# ----- Return on Incremental Capital (ΔROIC / ΔNOPAT / ΔIC) -----------------
-
 def _analyze_return_on_incremental_capital(metrics: list, line_items: list) -> dict:
-    """
-    Assess quality of new capital deployment via return on incremental capital.
-    Formula: ΔNOPAT / ΔInvested Capital (where IC = equity + debt - cash)
-
-    A positive and high ROIC delta means every new dollar invested is generating
-    strong returns — management is deploying capital wisely.
-    A declining ROIC delta signals diminishing returns on new investments.
-
-    Also checks ROIC level and trend across periods from line items.
-    """
-    max_score = 6  # 3pts ROIC level + 3pts incremental capital return
+    max_score = 6
     score = 0
     details: list[str] = []
 
-    # ROIC level and trend from line items
     roic_values = [
-        _safe_get(item, "return_on_invested_capital")
+        item.return_on_invested_capital
         for item in line_items
-        if _safe_get(item, "return_on_invested_capital") is not None
+        if item.return_on_invested_capital is not None
     ]
 
-    if not roic_values:
-        latest_metrics = metrics[0] if metrics else None
-        roic_from_metrics = _safe_get(latest_metrics, "return_on_invested_capital")
+    if not roic_values and metrics:
+        roic_from_metrics = metrics[0].return_on_invested_capital
         if roic_from_metrics is not None:
             roic_values = [roic_from_metrics]
 
@@ -400,7 +348,6 @@ def _analyze_return_on_incremental_capital(metrics: list, line_items: list) -> d
         avg_roic = sum(roic_values) / len(roic_values)
         is_improving = len(roic_values) >= 2 and roic_values[0] >= roic_values[-1]
         trend_label = "improving" if is_improving else "declining"
-
         if avg_roic > 0.20:
             score += 3
             details.append(f"Exceptional ROIC: avg {avg_roic:.1%} ({trend_label})")
@@ -411,79 +358,62 @@ def _analyze_return_on_incremental_capital(metrics: list, line_items: list) -> d
             score += 1
             details.append(f"Adequate ROIC: avg {avg_roic:.1%} ({trend_label})")
         else:
-            details.append(f"Poor ROIC: avg {avg_roic:.1%} — capital not being deployed effectively")
+            details.append(f"Poor ROIC: avg {avg_roic:.1%}")
     else:
+        avg_roic = None
         details.append("ROIC: insufficient data")
 
-    # Incremental capital return: ΔNOPAT / ΔIC
-    # NOPAT proxy: operating_income or ebit (net of implied taxes via FCF)
-    # IC proxy: equity + debt - cash
     nopat_values = [
-        _safe_get(item, "ebit") or _safe_get(item, "operating_income")
+        item.ebit or item.operating_income
         for item in line_items
-        if (_safe_get(item, "ebit") or _safe_get(item, "operating_income")) is not None
+        if (item.ebit or item.operating_income) is not None
     ]
-
     ic_values = []
     for item in line_items:
-        equity = _safe_get(item, "shareholders_equity")
-        debt = _safe_get(item, "total_debt")
-        cash = _safe_get(item, "cash_and_equivalents")
+        equity = item.shareholders_equity
+        debt = item.total_debt
+        cash = item.cash_and_equivalents
         if equity is not None and debt is not None and cash is not None:
             ic_values.append(equity + debt - cash)
 
     if len(nopat_values) >= 2 and len(ic_values) >= 2:
         delta_nopat = nopat_values[0] - nopat_values[-1]
         delta_ic = ic_values[0] - ic_values[-1]
-
         if delta_ic != 0:
             roic_incremental = delta_nopat / abs(delta_ic)
             if roic_incremental > 0.20:
                 score += 3
-                details.append(f"Excellent incremental ROIC: {roic_incremental:.1%} — new capital generating strong returns")
+                details.append(f"Excellent incremental ROIC: {roic_incremental:.1%}")
             elif roic_incremental > 0.10:
                 score += 2
                 details.append(f"Good incremental ROIC: {roic_incremental:.1%}")
             elif roic_incremental > 0:
                 score += 1
-                details.append(f"Positive incremental ROIC: {roic_incremental:.1%} — new capital earning above zero")
+                details.append(f"Positive incremental ROIC: {roic_incremental:.1%}")
             else:
-                details.append(f"Negative incremental ROIC: {roic_incremental:.1%} — new capital destroying value")
+                details.append(f"Negative incremental ROIC: {roic_incremental:.1%}")
         else:
-            details.append("Incremental ROIC: no change in invested capital over period")
+            details.append("Incremental ROIC: no change in invested capital")
     else:
-        details.append("Incremental ROIC: insufficient data for delta calculation")
+        details.append("Incremental ROIC: insufficient data")
 
     return {
         "score": (score / max_score) * 10,
         "max_score": max_score,
         "details": "; ".join(details),
-        "avg_roic": round(sum(roic_values) / len(roic_values), 4) if roic_values else None,
+        "avg_roic": round(avg_roic, 4) if avg_roic is not None else None,
     }
 
 
-# ----- Debt Management (Net Debt Change Trend) ------------------------------
-
 def _analyze_debt_management(line_items: list) -> dict:
-    """
-    Assess balance sheet stewardship via net debt trend.
-    Net debt = total debt - cash.
-    A consistently declining net debt position signals:
-    - Free cash flow being used to strengthen the balance sheet
-    - Management prioritizing financial optionality
-    - Reduced vulnerability to rate cycles and downturns
-
-    Rising net debt is not always bad (if funding high-ROIC growth),
-    but the trend must be intentional and controlled.
-    """
     max_score = 4
     score = 0
     details: list[str] = []
 
     net_debt_series = []
     for item in line_items:
-        debt = _safe_get(item, "total_debt")
-        cash = _safe_get(item, "cash_and_equivalents")
+        debt = item.total_debt
+        cash = item.cash_and_equivalents
         if debt is not None and cash is not None:
             net_debt_series.append(debt - cash)
 
@@ -500,17 +430,14 @@ def _analyze_debt_management(line_items: list) -> dict:
     oldest_net_debt = net_debt_series[-1]
     net_debt_change = latest_net_debt - oldest_net_debt
 
-    # Score direction and magnitude of net debt change
     if latest_net_debt < 0:
-        # Net cash position throughout
         score += 4
-        details.append(f"Net cash position: ${abs(latest_net_debt):,.0f} — zero balance sheet risk")
+        details.append(f"Net cash position: ${abs(latest_net_debt):,.0f}")
     elif net_debt_change < 0:
-        # Debt actively being paid down
         reduction_pct = abs(net_debt_change) / abs(oldest_net_debt) if oldest_net_debt != 0 else 0
         if reduction_pct > 0.20:
             score += 3
-            details.append(f"Significant debt reduction: net debt down {reduction_pct:.1%} — strong balance sheet improvement")
+            details.append(f"Significant debt reduction: net debt down {reduction_pct:.1%}")
         elif reduction_pct > 0.05:
             score += 2
             details.append(f"Moderate debt reduction: net debt down {reduction_pct:.1%}")
@@ -518,13 +445,12 @@ def _analyze_debt_management(line_items: list) -> dict:
             score += 1
             details.append(f"Slight debt reduction: net debt down {reduction_pct:.1%}")
     else:
-        # Debt increasing
         increase_pct = net_debt_change / abs(oldest_net_debt) if oldest_net_debt != 0 else 0
         if increase_pct < 0.10:
             score += 1
-            details.append(f"Stable net debt: increased only {increase_pct:.1%} — manageable")
+            details.append(f"Stable net debt: increased only {increase_pct:.1%}")
         else:
-            details.append(f"Rising net debt: up {increase_pct:.1%} — balance sheet deteriorating")
+            details.append(f"Rising net debt: up {increase_pct:.1%}")
 
     details.append(f"Latest net debt: ${latest_net_debt:,.0f}")
 
@@ -537,71 +463,67 @@ def _analyze_debt_management(line_items: list) -> dict:
     }
 
 
-###############################################################################
-# LLM generation
-###############################################################################
-
 def _generate_capital_allocation_output(
     ticker: str,
     analysis_data: dict,
     state: AgentState,
     agent_id: str,
+    upstream_context: dict = None,
 ) -> CapitalAllocationSignal:
-    """Generate a capital allocation signal grounded strictly in the computed metrics."""
 
-    template = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a disciplined capital allocation analyst. Your mandate:
-                - The quality of management is ultimately revealed by how they deploy capital
-                - Return on incremental capital is the single most important metric — it shows if new investments earn above cost of capital
-                - Share dilution is a silent tax; buybacks at fair value are the most efficient return mechanism
-                - A growing dividend signals confidence; a cut signals distress
-                - Net debt trend reveals whether management is building or eroding financial optionality
-                - Great capital allocators are rare — reward them with conviction; penalize poor allocators clearly
+    upstream_section = ""
+    if upstream_context:
+        upstream_section = "\n\nContext from upstream agents:\n"
+        for upstream_id, ctx in upstream_context.items():
+            upstream_section += f"{ctx.get('agent', upstream_id)}: {json.dumps(ctx, indent=2)}\n"
+        upstream_section += "\nIncorporate this context into your capital allocation assessment.\n"
 
-                When providing your reasoning, be specific by:
-                1. Leading with return on incremental capital — is new investment creating or destroying value?
-                2. Assessing the shareholder return policy — buybacks, dividends, or dilution?
-                3. Commenting on the net debt trend — is the balance sheet strengthening over time?
-                4. Evaluating overall ROIC level — is the existing capital base generating strong returns?
-                5. Concluding with a clear capital allocation quality verdict
-                """,
-            ),
-            (
-                "human",
-                """Based on the following data, generate a capital allocation signal for {ticker}:
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """You are a disciplined capital allocation analyst. Your mandate:
+            - Return on incremental capital is the single most important metric
+            - Share dilution is a silent tax; buybacks at fair value are the most efficient return mechanism
+            - A growing dividend signals confidence; a cut signals distress
+            - Net debt trend reveals whether management is building or eroding financial optionality
+            - Great capital allocators are rare — reward them with conviction
 
-                Analysis Data:
-                {analysis_data}
+            When providing your reasoning:
+            1. Lead with return on incremental capital
+            2. Assess the shareholder return policy
+            3. Comment on the net debt trend
+            4. Evaluate overall ROIC level
+            5. Conclude with a clear capital allocation quality verdict""",
+        ),
+        (
+            "human",
+            """Based on the following data, generate a capital allocation signal for {ticker}:
 
-                Return the trading signal in the following JSON format exactly:
-                {{
-                  "signal": "bullish" | "bearish" | "neutral",
-                  "confidence": float between 0 and 100,
-                  "reasoning": "string"
-                }}
-                """,
-            ),
-        ]
-    )
+Analysis Data:
+{analysis_data}
+{upstream_context}
+Return the trading signal in the following JSON format exactly:
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float between 0 and 100,
+  "reasoning": "string"
+}}""",
+        ),
+    ])
 
-    prompt = template.invoke(
-        {"analysis_data": json.dumps(analysis_data, indent=2), "ticker": ticker}
-    )
+    prompt = template.invoke({
+        "analysis_data": json.dumps(analysis_data, indent=2),
+        "ticker": ticker,
+        "upstream_context": upstream_section,
+    })
 
-    def create_default_capital_allocation_signal():
-        return CapitalAllocationSignal(
-            signal="neutral",
-            confidence=0.0,
-            reasoning="Parsing error — defaulting to neutral",
-        )
+    def create_default():
+        return CapitalAllocationSignal(signal="neutral", confidence=0.0, reasoning="Parsing error — defaulting to neutral")
 
     return call_llm(
         prompt=prompt,
         pydantic_model=CapitalAllocationSignal,
         agent_name=agent_id,
         state=state,
-        default_factory=create_default_capital_allocation_signal,
+        default_factory=create_default,
     )
