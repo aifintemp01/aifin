@@ -155,7 +155,7 @@ def _extract_close_prices(prices) -> list[float]:
     """
     sorted_prices = sorted(
         prices,
-        key=lambda p: p.date if hasattr(p, "date") else p["date"]
+        key=lambda p: p.time if hasattr(p, "time") else p["time"]
     )
     close = []
     for p in sorted_prices:
