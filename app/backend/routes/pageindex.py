@@ -2,12 +2,15 @@ import sys
 import os
 import re
 import json
+import hashlib
 import chromadb
 from pathlib import Path
 from datetime import datetime, timezone
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from app.backend.auth import get_device_id
 
 # ---------------------------------------------------------------------------
 # PAGEINDEX_DIR — where pageindex.py and ocr.py live inside the repo
@@ -40,22 +43,41 @@ class QueryRequest(BaseModel):
     query: str
 
 
-def _get_paths(filename: str):
-    """Return (pdf_path, md_path, tree_path) for a given filename stem."""
+def _device_prefix(device_id: str) -> str:
+    """
+    Short, stable prefix derived from device_id. Used to namespace Chroma
+    collection names — Chroma caps names at 63 chars, so a full 36-char
+    UUID would eat most of that budget and leave little room for the
+    document name itself.
+    """
+    return hashlib.sha256(device_id.encode()).hexdigest()[:12]
+
+
+def _device_dir(device_id: str) -> Path:
+    """Each device gets its own upload subdirectory — this is what actually
+    keeps devices from seeing or colliding with each other's documents."""
+    d = UPLOAD_DIR / device_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _get_paths(filename: str, device_id: str):
+    """Return (pdf_path, md_path, tree_path) for a given filename stem, scoped to device_id."""
     stem = Path(filename).stem
-    pdf_path  = UPLOAD_DIR / f"{stem}.pdf"
-    md_path   = UPLOAD_DIR / f"{stem}.md"
-    tree_path = UPLOAD_DIR / f"{stem}.tree.json"
+    device_dir = _device_dir(device_id)
+    pdf_path  = device_dir / f"{stem}.pdf"
+    md_path   = device_dir / f"{stem}.md"
+    tree_path = device_dir / f"{stem}.tree.json"
     return pdf_path, md_path, tree_path
 
 
-def _history_path(filename: str) -> Path:
+def _history_path(filename: str, device_id: str) -> Path:
     stem = Path(filename).stem
-    return UPLOAD_DIR / f"{stem}.history.json"
+    return _device_dir(device_id) / f"{stem}.history.json"
 
 
-def _load_history(filename: str) -> list:
-    path = _history_path(filename)
+def _load_history(filename: str, device_id: str) -> list:
+    path = _history_path(filename, device_id)
     if not path.exists():
         return []
     try:
@@ -65,9 +87,9 @@ def _load_history(filename: str) -> list:
         return []
 
 
-def _append_history(filename: str, user_query: str, assistant_answer: str) -> None:
-    path = _history_path(filename)
-    messages = _load_history(filename)
+def _append_history(filename: str, device_id: str, user_query: str, assistant_answer: str) -> None:
+    path = _history_path(filename, device_id)
+    messages = _load_history(filename, device_id)
     now = datetime.now(timezone.utc).isoformat()
     messages.append({"role": "user",      "content": user_query,        "timestamp": now})
     messages.append({"role": "assistant", "content": assistant_answer,  "timestamp": now})
@@ -77,17 +99,23 @@ def _append_history(filename: str, user_query: str, assistant_answer: str) -> No
     )
 
 
+def _collection_key(stem: str, device_id: str) -> str:
+    """Chroma collection name, namespaced per device so one device's
+    documents are never retrievable by another's queries."""
+    return f"{_device_prefix(device_id)}_{stem}"
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), device_id: str = Depends(get_device_id)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
     stem = Path(file.filename).stem
-    pdf_path, md_path, tree_path = _get_paths(file.filename)
+    pdf_path, md_path, tree_path = _get_paths(file.filename, device_id)
 
     contents = await file.read()
     with open(pdf_path, "wb") as f:
@@ -103,7 +131,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         summarize_tree(tree)
         save_tree(tree, tree_path)
 
-        collection = get_chroma_collection(stem)
+        collection = get_chroma_collection(_collection_key(stem, device_id))
         build_chunk_index(tree, collection)
 
         return JSONResponse({
@@ -121,13 +149,13 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @router.get("/status/{filename}")
-async def get_status(filename: str):
-    _, md_path, tree_path = _get_paths(filename)
+async def get_status(filename: str, device_id: str = Depends(get_device_id)):
+    _, md_path, tree_path = _get_paths(filename, device_id)
     stem = Path(filename).stem
 
     if tree_path.exists():
         tree       = load_tree(tree_path)
-        collection = get_chroma_collection(stem)
+        collection = get_chroma_collection(_collection_key(stem, device_id))
         indexed    = collection_is_indexed(collection)
         return {
             "status":      "ready",
@@ -143,8 +171,8 @@ async def get_status(filename: str):
 
 
 @router.post("/query")
-async def query_document(req: QueryRequest):
-    _, _, tree_path = _get_paths(req.filename)
+async def query_document(req: QueryRequest, device_id: str = Depends(get_device_id)):
+    _, _, tree_path = _get_paths(req.filename, device_id)
     stem = Path(req.filename).stem
 
     if not tree_path.exists():
@@ -155,11 +183,11 @@ async def query_document(req: QueryRequest):
 
     try:
         tree       = load_tree(tree_path)
-        collection = get_chroma_collection(stem)
+        collection = get_chroma_collection(_collection_key(stem, device_id))
         answer     = retrieve_and_answer(tree, req.query, collection)
 
         # Persist this exchange to history
-        _append_history(req.filename, req.query, answer)
+        _append_history(req.filename, device_id, req.query, answer)
 
         return {
             "answer":   answer,
@@ -172,14 +200,14 @@ async def query_document(req: QueryRequest):
 
 
 @router.get("/history/{filename}")
-async def get_history(filename: str):
+async def get_history(filename: str, device_id: str = Depends(get_device_id)):
     """Return the full conversation history for a document."""
-    return {"filename": filename, "messages": _load_history(filename)}
+    return {"filename": filename, "messages": _load_history(filename, device_id)}
 
 
 @router.post("/reindex/{filename}")
-async def reindex_document(filename: str):
-    _, _, tree_path = _get_paths(filename)
+async def reindex_document(filename: str, device_id: str = Depends(get_device_id)):
+    _, _, tree_path = _get_paths(filename, device_id)
     stem = Path(filename).stem
 
     if not tree_path.exists():
@@ -188,13 +216,13 @@ async def reindex_document(filename: str):
     try:
         tree   = load_tree(tree_path)
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        safe_name = re.sub(r"[^a-zA-Z0-9\-]", "-", stem)[:63]
+        safe_name = re.sub(r"[^a-zA-Z0-9\-]", "-", _collection_key(stem, device_id))[:63]
         try:
             client.delete_collection(safe_name)
         except Exception:
             pass
 
-        collection = get_chroma_collection(stem)
+        collection = get_chroma_collection(_collection_key(stem, device_id))
         build_chunk_index(tree, collection)
 
         return {"status": "reindexed", "filename": filename, "chunk_count": collection.count()}
@@ -203,13 +231,14 @@ async def reindex_document(filename: str):
 
 
 @router.get("/documents")
-async def list_documents():
+async def list_documents(device_id: str = Depends(get_device_id)):
     docs = []
-    for tree_path in UPLOAD_DIR.glob("*.tree.json"):
+    device_dir = _device_dir(device_id)
+    for tree_path in device_dir.glob("*.tree.json"):
         stem = tree_path.stem.replace(".tree", "")
         try:
             tree       = load_tree(tree_path)
-            collection = get_chroma_collection(stem)
+            collection = get_chroma_collection(_collection_key(stem, device_id))
             indexed    = collection_is_indexed(collection)
             docs.append({
                 "filename":    f"{stem}.pdf",
