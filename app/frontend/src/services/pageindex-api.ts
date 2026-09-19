@@ -1,3 +1,5 @@
+import { apiFetch } from '@/services/api-fetch';
+
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface DocumentStatus {
@@ -45,7 +47,7 @@ export const PageIndexAPI = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch(`${API_BASE}/pageindex/upload`, {
+    const res = await apiFetch(`${API_BASE}/pageindex/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -58,13 +60,13 @@ export const PageIndexAPI = {
   },
 
   async getStatus(filename: string): Promise<DocumentStatus> {
-    const res = await fetch(`${API_BASE}/pageindex/status/${encodeURIComponent(filename)}`);
+    const res = await apiFetch(`${API_BASE}/pageindex/status/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error('Status check failed');
     return res.json();
   },
 
   async query(filename: string, query: string): Promise<QueryResult> {
-    const res = await fetch(`${API_BASE}/pageindex/query`, {
+    const res = await apiFetch(`${API_BASE}/pageindex/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename, query }),
@@ -77,13 +79,13 @@ export const PageIndexAPI = {
   },
 
   async listDocuments(): Promise<{ documents: DocumentListItem[] }> {
-    const res = await fetch(`${API_BASE}/pageindex/documents`);
+    const res = await apiFetch(`${API_BASE}/pageindex/documents`);
     if (!res.ok) throw new Error('Failed to list documents');
     return res.json();
   },
 
   async getHistory(filename: string): Promise<HistoryResult> {
-    const res = await fetch(`${API_BASE}/pageindex/history/${encodeURIComponent(filename)}`);
+    const res = await apiFetch(`${API_BASE}/pageindex/history/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error('Failed to load history');
     return res.json();
   },

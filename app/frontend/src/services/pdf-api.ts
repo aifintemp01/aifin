@@ -1,3 +1,5 @@
+import { apiFetch } from '@/services/api-fetch';
+
 const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000';
 
 export interface PDFJob {
@@ -23,7 +25,7 @@ export async function requestPDF(
   email: string,
   run_data: PDFRunData,
 ): Promise<{ queue_id: string; position: number; message: string }> {
-  const res = await fetch(`${API_BASE}/pdf/request`, {
+  const res = await apiFetch(`${API_BASE}/pdf/request`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, run_data }),
@@ -37,7 +39,7 @@ export async function requestPDF(
 
 export async function getQueue(): Promise<PDFJob[]> {
   try {
-    const res = await fetch(`${API_BASE}/pdf/queue`);
+    const res = await apiFetch(`${API_BASE}/pdf/queue`);
     if (!res.ok) return [];
     return res.json();
   } catch {
@@ -46,5 +48,5 @@ export async function getQueue(): Promise<PDFJob[]> {
 }
 
 export async function cancelPDF(queue_id: string): Promise<void> {
-  await fetch(`${API_BASE}/pdf/queue/${queue_id}`, { method: 'DELETE' });
+  await apiFetch(`${API_BASE}/pdf/queue/${queue_id}`, { method: 'DELETE' });
 }

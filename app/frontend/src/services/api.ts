@@ -7,12 +7,14 @@ import {
   HedgeFundRequest
 } from '@/services/types';
 
+import { apiFetch } from '@/services/api-fetch';
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const api = {
   getAgents: async (): Promise<Agent[]> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/hedge-fund/agents`);
+      const response = await apiFetch(`${API_BASE_URL}/hedge-fund/agents`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       return data.agents;
@@ -24,7 +26,7 @@ export const api = {
 
   getLanguageModels: async (): Promise<LanguageModel[]> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/language-models/`);
+      const response = await apiFetch(`${API_BASE_URL}/language-models/`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       return data.models;
@@ -36,7 +38,7 @@ export const api = {
 
   saveJsonFile: async (filename: string, data: any): Promise<void> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/storage/save-json`, {
+      const response = await apiFetch(`${API_BASE_URL}/storage/save-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename, data }),
@@ -66,7 +68,7 @@ export const api = {
     const controller = new AbortController();
     const { signal } = controller;
 
-    fetch(`${API_BASE_URL}/hedge-fund/run`, {
+    apiFetch(`${API_BASE_URL}/hedge-fund/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(backendParams),
