@@ -11,6 +11,10 @@ class HedgeFundFlow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
+    # Device scoping — which device (JWT-identified, no login yet) owns this flow.
+    # Nullable so pre-existing rows (created before this column existed) aren't broken.
+    device_id = Column(String(64), nullable=True, index=True)
+
     # Flow metadata
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
@@ -144,6 +148,3 @@ class MarketDataCandle(Base):
     source_url = Column(String(255), nullable=True)
     raw_data_id = Column(Integer, ForeignKey('market_data_raw.id'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
- 

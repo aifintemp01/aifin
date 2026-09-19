@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.backend.database import get_db
+from app.backend.auth import get_device_id
 from app.backend.repositories.flow_repository import FlowRepository
 from app.backend.models.schemas import (
     FlowCreateRequest, 
@@ -23,11 +24,12 @@ router = APIRouter(prefix="/flows", tags=["flows"])
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def create_flow(request: FlowCreateRequest, db: Session = Depends(get_db)):
+async def create_flow(request: FlowCreateRequest, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Create a new hedge fund flow"""
     try:
         repo = FlowRepository(db)
         flow = repo.create_flow(
+            device_id=device_id,
             name=request.name,
             description=request.description,
             nodes=request.nodes,
@@ -49,11 +51,11 @@ async def create_flow(request: FlowCreateRequest, db: Session = Depends(get_db))
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def get_flows(include_templates: bool = True, db: Session = Depends(get_db)):
-    """Get all flows (summary view)"""
+async def get_flows(include_templates: bool = True, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
+    """Get all flows (summary view) belonging to this device"""
     try:
         repo = FlowRepository(db)
-        flows = repo.get_all_flows(include_templates=include_templates)
+        flows = repo.get_all_flows(device_id=device_id, include_templates=include_templates)
         return [FlowSummaryResponse.from_orm(flow) for flow in flows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve flows: {str(e)}")
@@ -67,11 +69,11 @@ async def get_flows(include_templates: bool = True, db: Session = Depends(get_db
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def get_flow(flow_id: int, db: Session = Depends(get_db)):
+async def get_flow(flow_id: int, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Get a specific flow by ID"""
     try:
         repo = FlowRepository(db)
-        flow = repo.get_flow_by_id(flow_id)
+        flow = repo.get_flow_by_id(flow_id, device_id)
         if not flow:
             raise HTTPException(status_code=404, detail="Flow not found")
         return FlowResponse.from_orm(flow)
@@ -89,12 +91,13 @@ async def get_flow(flow_id: int, db: Session = Depends(get_db)):
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def update_flow(flow_id: int, request: FlowUpdateRequest, db: Session = Depends(get_db)):
+async def update_flow(flow_id: int, request: FlowUpdateRequest, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Update an existing flow"""
     try:
         repo = FlowRepository(db)
         flow = repo.update_flow(
             flow_id=flow_id,
+            device_id=device_id,
             name=request.name,
             description=request.description,
             nodes=request.nodes,
@@ -121,11 +124,11 @@ async def update_flow(flow_id: int, request: FlowUpdateRequest, db: Session = De
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def delete_flow(flow_id: int, db: Session = Depends(get_db)):
+async def delete_flow(flow_id: int, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Delete a flow"""
     try:
         repo = FlowRepository(db)
-        success = repo.delete_flow(flow_id)
+        success = repo.delete_flow(flow_id, device_id)
         if not success:
             raise HTTPException(status_code=404, detail="Flow not found")
         return {"message": "Flow deleted successfully"}
@@ -143,11 +146,11 @@ async def delete_flow(flow_id: int, db: Session = Depends(get_db)):
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def duplicate_flow(flow_id: int, new_name: str = None, db: Session = Depends(get_db)):
+async def duplicate_flow(flow_id: int, new_name: str = None, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Create a copy of an existing flow"""
     try:
         repo = FlowRepository(db)
-        flow = repo.duplicate_flow(flow_id, new_name)
+        flow = repo.duplicate_flow(flow_id, device_id, new_name)
         if not flow:
             raise HTTPException(status_code=404, detail="Flow not found")
         return FlowResponse.from_orm(flow)
@@ -164,11 +167,11 @@ async def duplicate_flow(flow_id: int, new_name: str = None, db: Session = Depen
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-async def search_flows(name: str, db: Session = Depends(get_db)):
+async def search_flows(name: str, db: Session = Depends(get_db), device_id: str = Depends(get_device_id)):
     """Search flows by name"""
     try:
         repo = FlowRepository(db)
-        flows = repo.get_flows_by_name(name)
+        flows = repo.get_flows_by_name(name, device_id)
         return [FlowSummaryResponse.from_orm(flow) for flow in flows]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search flows: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to search flows: {str(e)}")
